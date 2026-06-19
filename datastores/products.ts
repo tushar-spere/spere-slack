@@ -1,15 +1,14 @@
 import { DefineDatastore, Schema } from "deno-slack-sdk/mod.ts";
 
-/**
- * Products Datastore
- * Stores the catalog of available products.
- */
 export const ProductsDatastore = DefineDatastore({
-  name: "products",
+  // THE VERSION BUMP: We point the system to a clean V2 table
+  name: "products_v2",
   primary_key: "id",
   attributes: {
     id: { type: Schema.types.string },
     name: { type: Schema.types.string },
     description: { type: Schema.types.string },
+    // V2 is now safely provisioned to accept raw strings
+    metadata: { type: Schema.types.string },
   },
 });
