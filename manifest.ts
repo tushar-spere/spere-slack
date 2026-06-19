@@ -1,6 +1,4 @@
 import { Manifest } from "deno-slack-sdk/mod.ts";
-import SampleWorkflow from "./workflows/sample_workflow.ts";
-import SampleObjectDatastore from "./datastores/sample_datastore.ts";
 
 /**
  * The app manifest contains the app's configuration. This
@@ -9,16 +7,13 @@ import SampleObjectDatastore from "./datastores/sample_datastore.ts";
  */
 export default Manifest({
   name: "spere-slack",
-  description: "A template for building Slack apps with Deno",
+  description: "Enterprise Slack application tailored to our business needs",
   icon: "assets/default_new_app_icon.png",
-  workflows: [SampleWorkflow],
+  workflows: [],
   outgoingDomains: [],
-  datastores: [SampleObjectDatastore],
+  datastores: [],
   botScopes: [
-    "commands",
-    "chat:write",
-    "chat:write.public",
-    "datastore:read",
-    "datastore:write",
+    // We are starting with an empty array.
+    // We will explicitly add permissions (like "chat:write") ONLY when our business logic demands it.
   ],
 });
