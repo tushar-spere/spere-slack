@@ -5,7 +5,6 @@ export const TenantSettingsDatastore = DefineDatastore({
   primary_key: "id",
   attributes: {
     id: { type: Schema.types.string },
-    // THE UPGRADE: Added column to store an array of target Channel IDs as a JSON string
     broadcast_channels: { type: Schema.types.string },
     custom_fields: {
       type: Schema.types.array,
@@ -24,5 +23,8 @@ export const TenantSettingsDatastore = DefineDatastore({
         },
       },
     },
+    // ADVANCED APPROVAL RULES STORAGE:
+    // Stored as a serialized JSON string to safely prevent exceeding the SDK's nested object depth limits
+    approval_rules: { type: Schema.types.string },
   },
 });
