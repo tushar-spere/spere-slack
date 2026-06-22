@@ -4,23 +4,21 @@ import { ListProductsWorkflow } from "./workflows/list_products_workflow.ts";
 import { ManageSettingsWorkflow } from "./workflows/manage_settings_workflow.ts";
 import { CreateQuoteWorkflow } from "./workflows/create_quote_workflow.ts";
 import { ListQuotesWorkflow } from "./workflows/list_quotes_workflow.ts";
-import { ViewQuoteDetailsWorkflow } from "./workflows/view_quote_details_workflow.ts";
 
 import { TenantSettingsDatastore } from "./datastores/tenant_settings.ts";
 import { ProductsDatastore } from "./datastores/products.ts";
 import { QuotesDatastore } from "./datastores/quotes.ts";
 
 export default Manifest({
-  name: "spere-slack",
-  description: "A dynamic Slack application",
-  icon: "assets/default_new_app_icon.png",
+  name: "Spere",
+  description: "A dynamic true CRM built for Slack.",
+  icon: "assets/spere-logo.png",
   workflows: [
     AddProductWorkflow,
     ListProductsWorkflow,
     ManageSettingsWorkflow,
     CreateQuoteWorkflow,
     ListQuotesWorkflow,
-    ViewQuoteDetailsWorkflow,
   ],
   outgoingDomains: [],
   datastores: [
