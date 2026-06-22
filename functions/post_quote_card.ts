@@ -141,10 +141,12 @@ function formatInCardTable(items: any[], customFieldsSchema: any[]) {
   return str + ("$" + sTot.toLocaleString()).padStart(wSub) + "\n" + tick3;
 }
 
+// 🛡️ SUPERCHARGED BUILDER: Resolves both schemas and statefully re-checks saved boxes
 function buildSafeDynamicInput(field: any, actionId: string, initVal?: any) {
   const safeStr = initVal !== undefined && initVal !== null && initVal !== ""
     ? String(initVal)
     : undefined;
+
   switch (field.type) {
     case "plain_text_input_multi":
       return {
@@ -167,6 +169,39 @@ function buildSafeDynamicInput(field: any, actionId: string, initVal?: any) {
       };
     case "multi_users_select":
       return { type: "multi_users_select", action_id: actionId };
+
+    // 🎯 GENERATION 2: Physical Checkboxes with saved-state hydration
+    case "checkboxes": {
+      const rawOptions =
+        (field.dropdown_options && field.dropdown_options.length > 0)
+          ? field.dropdown_options
+          : ["No Options Configured"];
+      const blockKitCheckboxes = rawOptions.map((opt: string) => ({
+        text: { type: "plain_text", text: String(opt).substring(0, 75) },
+        value: String(opt).substring(0, 75),
+      }));
+
+      let initialCheckboxes: any[] = [];
+      if (safeStr) {
+        const savedArr = safeStr.split(",").map((s) => s.trim());
+        initialCheckboxes = blockKitCheckboxes.filter((bOpt) =>
+          savedArr.includes(bOpt.value)
+        );
+      }
+
+      const resObj: any = {
+        type: "checkboxes",
+        action_id: actionId,
+        options: blockKitCheckboxes,
+      };
+
+      if (initialCheckboxes.length > 0) {
+        resObj.initial_options = initialCheckboxes;
+      }
+      return resObj;
+    }
+
+    // 🎯 GENERATION 1: Multi-Select Dropdowns with saved-state hydration
     case "static_select":
     case "multi_static_select": {
       const rawOptions =
@@ -177,17 +212,39 @@ function buildSafeDynamicInput(field: any, actionId: string, initVal?: any) {
         text: { type: "plain_text", text: String(opt).substring(0, 75) },
         value: String(opt).substring(0, 75),
       }));
-      const initOpt = safeStr
-        ? blockKitOptions.find((o) => o.value === safeStr)
-        : undefined;
-      return {
-        type: field.type,
-        action_id: actionId,
-        placeholder: { type: "plain_text", text: "Select..." },
-        options: blockKitOptions,
-        initial_option: field.type === "static_select" ? initOpt : undefined,
-      };
+
+      if (field.type === "static_select") {
+        const initOpt = safeStr
+          ? blockKitOptions.find((o) => o.value === safeStr)
+          : undefined;
+        return {
+          type: "static_select",
+          action_id: actionId,
+          placeholder: { type: "plain_text", text: "Select..." },
+          options: blockKitOptions,
+          initial_option: initOpt,
+        };
+      } else {
+        let initialMultiOpts: any[] = [];
+        if (safeStr) {
+          const savedArr = safeStr.split(",").map((s) => s.trim());
+          initialMultiOpts = blockKitOptions.filter((bOpt) =>
+            savedArr.includes(bOpt.value)
+          );
+        }
+        const mObj: any = {
+          type: "multi_static_select",
+          action_id: actionId,
+          placeholder: { type: "plain_text", text: "Select..." },
+          options: blockKitOptions,
+        };
+        if (initialMultiOpts.length > 0) {
+          mObj.initial_options = initialMultiOpts;
+        }
+        return mObj;
+      }
     }
+
     case "plain_text_input":
     default:
       return {
@@ -1137,9 +1194,15 @@ export default SlackFunction(
           const configuredLabel = customFields[fIdx]?.name ||
             "Spec " + (fIdx + 1);
           const aData = (aObj as any)[Object.keys(aObj as object)[0]];
-          const extVal = aData?.value || aData?.selected_date ||
-            aData?.selected_time ||
-            (aData?.selected_option ? aData.selected_option.value : null);
+
+          // 🎯 HARVESTER DEFENSE: Safely catches plural arrays during inventory modifications
+          const extVal = aData?.value ?? aData?.selected_date ??
+            aData?.selected_time ??
+            (aData?.selected_option ? aData.selected_option.value : null) ??
+            (aData?.selected_options
+              ? aData.selected_options.map((o: any) => o.value).join(", ")
+              : null);
+
           if (extVal) specs[configuredLabel] = extVal;
         }
       }

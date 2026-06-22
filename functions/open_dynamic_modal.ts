@@ -51,6 +51,23 @@ function buildDynamicElement(field: any, actionId: string, initVal?: any) {
       };
     case "multi_users_select":
       return { type: "multi_users_select", action_id: actionId };
+    // 🎯 INJECTED PARITY: Natively catches Generation 2 Checkbox definitions
+    case "checkboxes": {
+      const rawOptions =
+        (field.dropdown_options && field.dropdown_options.length > 0)
+          ? field.dropdown_options
+          : ["No Options Configured"];
+      const blockKitCheckboxes = rawOptions.map((opt: string) => ({
+        text: { type: "plain_text", text: String(opt).substring(0, 75) },
+        value: String(opt).substring(0, 75),
+      }));
+      return {
+        type: "checkboxes",
+        action_id: actionId,
+        options: blockKitCheckboxes,
+      };
+    }
+    // 🎯 PRESERVED PARITY: Maintains back-compatibility for Generation 1 Multi-Select rows
     case "static_select":
     case "multi_static_select": {
       const rawOptions =
