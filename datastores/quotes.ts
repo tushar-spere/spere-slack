@@ -12,13 +12,23 @@ export const QuotesDatastore = DefineDatastore({
     sales_rep_id: { type: Schema.slack.types.user_id },
 
     // ADVANCED APPROVAL STATE MACHINE EXPANSION:
-    approval_gauntlet: { type: Schema.types.string }, // Array of User IDs, e.g. '["U1", "U2"]'
-    current_approval_step: { type: Schema.types.number }, // Active execution index pointer
-    approval_status: { type: Schema.types.string }, // "PENDING_GAUNTLET", "APPROVED", "REJECTED"
-    approval_audit_trail: { type: Schema.types.string }, // Array of historical notes & timestamps
+    approval_gauntlet: { type: Schema.types.string },
+    current_approval_step: { type: Schema.types.number },
+    approval_status: { type: Schema.types.string },
+    approval_audit_trail: { type: Schema.types.string },
 
     // THE THREAD TRACKING UPGRADE:
-    broadcast_channel_id: { type: Schema.types.string }, // Stores the exact channel where the master card lives
-    broadcast_thread_ts: { type: Schema.types.string }, // Stores the parent timestamp identifier for threading replies
+    broadcast_channel_id: { type: Schema.types.string },
+    broadcast_thread_ts: { type: Schema.types.string },
+    card_instances: {
+      type: Schema.types.string,
+      description: "JSON array of { channel_id: string, ts: string, is_primary: boolean }",
+    },
+
+    // =========================================================================
+    // 🎯 THE TRACKING COLLAR: Explicitly whitelisted to survive disk I/O
+    // =========================================================================
+    active_dm_channel: { type: Schema.types.string },
+    active_dm_ts: { type: Schema.types.string },
   },
 });

@@ -1,9 +1,11 @@
 import { Manifest } from "deno-slack-sdk/mod.ts";
 import { AddProductWorkflow } from "./workflows/add_product_workflow.ts";
-import { ListProductsWorkflow } from "./workflows/list_products_workflow.ts";
 import { ManageSettingsWorkflow } from "./workflows/manage_settings_workflow.ts";
 import { CreateQuoteWorkflow } from "./workflows/create_quote_workflow.ts";
-import { ListQuotesWorkflow } from "./workflows/list_quotes_workflow.ts";
+
+// 🎯 Claim the two new domains
+import { ProductControllerDefinition } from "./functions/product_controller.ts";
+import { QuoteControllerDefinition } from "./functions/quote_controller.ts";
 
 import { TenantSettingsDatastore } from "./datastores/tenant_settings.ts";
 import { ProductsDatastore } from "./datastores/products.ts";
@@ -15,10 +17,12 @@ export default Manifest({
   icon: "assets/spere-logo.png",
   workflows: [
     AddProductWorkflow,
-    ListProductsWorkflow,
     ManageSettingsWorkflow,
     CreateQuoteWorkflow,
-    ListQuotesWorkflow,
+  ],
+  functions: [
+    ProductControllerDefinition,
+    QuoteControllerDefinition,
   ],
   outgoingDomains: [],
   datastores: [

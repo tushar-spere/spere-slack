@@ -74,8 +74,9 @@ function getNavHeader(activeView: "add" | "manage") {
   };
 }
 
+// WIDENED GATE: Allows Broadcast selection for both Quotes and Products!
 async function getBroadcastSection(client: any, schemaId: string) {
-  if (schemaId !== "schema_quote") return [];
+  if (schemaId !== "schema_quote" && schemaId !== "v4_final_config") return [];
   const res = await client.apps.datastore.get({
     datastore: TenantSettingsDatastore.name,
     id: schemaId,
@@ -103,7 +104,7 @@ async function getBroadcastSection(client: any, schemaId: string) {
       block_id: "broadcast_channels_block",
       optional: true,
       element: selectElement,
-      label: { type: "plain_text", text: "Record Trigger Channels" },
+      label: { type: "plain_text", text: "Announce / Broadcast Channels" },
     },
     { type: "divider" },
   ];
@@ -115,8 +116,9 @@ async function getAddCustomFieldBlocks(
   schemaId: string,
 ) {
   const broadcastBlocks = await getBroadcastSection(client, schemaId);
+  const isQuoteProductFlow = schemaId === "schema_quote_product";
 
-  return [
+  const blocks: any[] = [
     getSchemaSelector(schemaId),
     { type: "divider" },
     getNavHeader("add"),
@@ -199,7 +201,10 @@ async function getAddCustomFieldBlocks(
         text: "Choices (For Dropdowns & Checkboxes)",
       },
     },
-    {
+  ];
+
+  if (!isQuoteProductFlow) {
+    blocks.push({
       type: "input",
       block_id: "new_req_" + refreshId,
       optional: true,
@@ -212,19 +217,22 @@ async function getAddCustomFieldBlocks(
         }],
       },
       label: { type: "plain_text", text: "Requirements" },
-    },
-    {
-      type: "actions",
-      block_id: "add_field_actions",
-      elements: [{
-        type: "button",
-        text: { type: "plain_text", text: "Commit Field to Schema" },
-        action_id: "add_new_field_btn",
-        style: "primary",
-        value: "add",
-      }],
-    },
-  ];
+    });
+  }
+
+  blocks.push({
+    type: "actions",
+    block_id: "add_field_actions",
+    elements: [{
+      type: "button",
+      text: { type: "plain_text", text: "Commit Field to Schema" },
+      action_id: "add_new_field_btn",
+      style: "primary",
+      value: "add",
+    }],
+  });
+
+  return blocks;
 }
 
 async function getManageCustomFieldsBlocks(client: any, schemaId: string) {
@@ -259,29 +267,6 @@ async function getManageCustomFieldsBlocks(client: any, schemaId: string) {
     });
   } else {
     fields.forEach((f: any, index: number) => {
-      const formOption = {
-        text: { type: "plain_text", text: "Create Form" },
-        value: "form",
-      };
-      const tableOption = {
-        text: { type: "plain_text", text: "Data Table" },
-        value: "table",
-      };
-
-      const initialOptions: any[] = [];
-      if (f.show_on_form) initialOptions.push(formOption);
-      if (f.show_on_table) initialOptions.push(tableOption);
-
-      const selectElement: any = {
-        type: "multi_static_select",
-        placeholder: { type: "plain_text", text: "Select Visibility" },
-        action_id: "visibility_action_" + index,
-        options: [formOption, tableOption],
-      };
-      if (initialOptions.length > 0) {
-        selectElement.initial_options = initialOptions;
-      }
-
       let displayType = f.type;
       if (f.dropdown_options && f.dropdown_options.length > 0) {
         displayType += " (" + f.dropdown_options.join(", ") + ")";
@@ -295,7 +280,6 @@ async function getManageCustomFieldsBlocks(client: any, schemaId: string) {
           text: "*" + f.name + "* [" + displayType + "] - " +
             (f.required ? "required" : "optional"),
         },
-        accessory: selectElement,
       });
 
       blocks.push({
@@ -316,7 +300,7 @@ async function getManageCustomFieldsBlocks(client: any, schemaId: string) {
           },
           {
             type: "button",
-            text: { type: "plain_text", text: ":x: Delete Field" },
+            text: { type: "plain_text", text: "Delete" },
             style: "danger",
             action_id: "delete_custom_field_action",
             value: String(index),
@@ -380,9 +364,6 @@ async function getUnifiedFieldOptions(client: any) {
   return options;
 }
 
-// =============================================================================
-// UPGRADED RULE BUILDER: USES MULTI_USERS_SELECT FOR SEQUENTIAL CHAINS
-// =============================================================================
 async function getAddApprovalRuleBlocks(
   client: any,
   refreshId: number,
@@ -427,7 +408,6 @@ async function getAddApprovalRuleBlocks(
     ? `Edit Approval Step #${editIdx + 1}`
     : "Approval Details";
 
-  // SCHEMA BRIDGE: Securely resolve legacy 'approver_id' string into 'approver_ids' array
   const initUsersArr = editRule?.approver_ids ??
     (editRule?.approver_id ? [editRule.approver_id] : undefined);
 
@@ -587,9 +567,6 @@ async function getAddApprovalRuleBlocks(
   return blocks;
 }
 
-// =============================================================================
-// MANAGE UI: PRINTS THE FULL SEQUENTIAL ESCALATION CHAIN (U1 -> U2 -> U3)
-// =============================================================================
 async function getManageApprovalRulesBlocks(client: any) {
   const res = await client.apps.datastore.get({
     datastore: TenantSettingsDatastore.name,
@@ -773,6 +750,10 @@ export default SlackFunction(
       }
     }
 
+    if (curId === "schema_quote_product") {
+      isReq = false; 
+    }
+
     if (newName.trim() !== "") {
       const res = await client.apps.datastore.get({
         datastore: TenantSettingsDatastore.name,
@@ -870,41 +851,6 @@ export default SlackFunction(
     },
   )
   .addBlockActionsHandler(
-    [/^visibility_action_.*/],
-    async ({ action, body, client }) => {
-      const curId = body.view?.private_metadata || "v4_final_config";
-      const fieldIdx = parseInt(
-        action.action_id.replace("visibility_action_", ""),
-        10,
-      );
-      const sel = (action as any).selected_options || [];
-      const isForm = sel.some((o: any) => o.value === "form");
-      const isTab = sel.some((o: any) => o.value === "table");
-
-      const res = await client.apps.datastore.get({
-        datastore: TenantSettingsDatastore.name,
-        id: curId,
-      });
-      if (res.ok && res.item?.custom_fields) {
-        const fields = res.item.custom_fields;
-        if (fields[fieldIdx]) {
-          fields[fieldIdx].show_on_form = isForm;
-          fields[fieldIdx].show_on_table = isTab;
-          await client.apps.datastore.put({
-            datastore: TenantSettingsDatastore.name,
-            item: {
-              id: curId,
-              custom_fields: fields,
-              broadcast_channels: res.item.broadcast_channels,
-              approval_rules: res.item.approval_rules,
-            },
-          });
-        }
-      }
-      return { completed: false };
-    },
-  )
-  .addBlockActionsHandler(
     ["delete_custom_field_action"],
     async ({ action, body, client }) => {
       const vId = body.view?.id;
@@ -983,9 +929,6 @@ export default SlackFunction(
       return { completed: false };
     },
   )
-  // =============================================================================
-  // SUBMISSION CATCHER: HARVESTS MULTI_USERS_SELECT PLURAL ARRAYS
-  // =============================================================================
   .addBlockActionsHandler(
     ["save_approval_rule_btn"],
     async ({ action, body, client }) => {
@@ -1130,7 +1073,30 @@ export default SlackFunction(
     "quorum_val",
     "users_val",
   ], async () => ({ completed: false }))
+  // 🎯 WIDENED SAVE GATE: Commits channel choices lawfully for Product and Quotes
   .addViewSubmissionHandler(
     ["settings_add_view", "settings_manage_view"],
-    async () => ({ response_action: "clear" }),
+    async ({ body, client }) => {
+      const curId = body.view?.private_metadata || "v4_final_config";
+      if (curId === "schema_quote" || curId === "v4_final_config") {
+        const stateVals = body.view?.state?.values;
+        const selectedChannels = stateVals?.["broadcast_channels_block"]?.["broadcast_channels_action"]?.selected_channels;
+        if (selectedChannels) {
+          const res = await client.apps.datastore.get({
+            datastore: TenantSettingsDatastore.name,
+            id: curId,
+          });
+          await client.apps.datastore.put({
+            datastore: TenantSettingsDatastore.name,
+            item: {
+              id: curId,
+              custom_fields: res.item?.custom_fields || [],
+              broadcast_channels: JSON.stringify(selectedChannels),
+              approval_rules: res.item?.approval_rules,
+            },
+          });
+        }
+      }
+      return { response_action: "clear" };
+    },
   );
