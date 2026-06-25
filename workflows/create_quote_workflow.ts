@@ -1,5 +1,5 @@
 import { DefineWorkflow, Schema } from "deno-slack-sdk/mod.ts";
-import { OpenDynamicModalDefinition } from "../functions/open_dynamic_modal.ts";
+import { QuoteControllerDefinition } from "../functions/quote_controller.ts";
 import { PostQuoteCardFunction } from "../functions/post_quote_card.ts";
 
 export const CreateQuoteWorkflow = DefineWorkflow({
@@ -13,9 +13,9 @@ export const CreateQuoteWorkflow = DefineWorkflow({
 });
 
 // Capture the step so we can reference its outputs downstream
-const formStep = CreateQuoteWorkflow.addStep(OpenDynamicModalDefinition, {
+const formStep = CreateQuoteWorkflow.addStep(QuoteControllerDefinition, {
   interactivity: CreateQuoteWorkflow.inputs.interactivity,
-  schema_id: "schema_quote",
+  // Notice: schema_id is gone. The controller natively targets schema_quote.
 });
 
 // Chain the Card Generator directly to the form's completion

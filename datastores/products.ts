@@ -8,7 +8,11 @@ export const ProductsDatastore = DefineDatastore({
     id: { type: Schema.types.string },
     name: { type: Schema.types.string },
     description: { type: Schema.types.string },
-    // V2 is now safely provisioned to accept raw strings
+    // V2 is safely provisioned to accept raw strings
     metadata: { type: Schema.types.string },
+
+    // 🎯 V2 FINANCIAL & LIFECYCLE EXPANSION:
+    price: { type: Schema.types.number }, // Standard commercial list price ($)
+    is_active: { type: Schema.types.boolean }, // Soft-delete availability toggle
   },
 });

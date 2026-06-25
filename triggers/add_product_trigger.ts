@@ -9,7 +9,7 @@ import { AddProductWorkflow } from "../workflows/add_product_workflow.ts";
  */
 const addProductTrigger: Trigger<typeof AddProductWorkflow.definition> = {
   type: TriggerTypes.Shortcut,
-  name: "Add a New Product",
+  name: "New Product",
   description:
     "Starts the workflow to add a new product to the database catalog",
   workflow: `#/workflows/${AddProductWorkflow.definition.callback_id}`,

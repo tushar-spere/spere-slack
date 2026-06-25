@@ -1,5 +1,5 @@
 import { DefineWorkflow, Schema } from "deno-slack-sdk/mod.ts";
-import { OpenDynamicModalDefinition } from "../functions/open_dynamic_modal.ts";
+import { ProductControllerDefinition } from "../functions/product_controller.ts";
 
 export const AddProductWorkflow = DefineWorkflow({
   callback_id: "add_product_workflow",
@@ -11,9 +11,9 @@ export const AddProductWorkflow = DefineWorkflow({
   },
 });
 
-AddProductWorkflow.addStep(OpenDynamicModalDefinition, {
+AddProductWorkflow.addStep(ProductControllerDefinition, {
   interactivity: AddProductWorkflow.inputs.interactivity,
-  schema_id: "v4_final_config", // TELLS THE ENGINE TO DRAW THE PRODUCT FORM
+  // Notice: schema_id is gone. The controller natively targets v4_final_config.
 });
 
 export default AddProductWorkflow;
