@@ -2,12 +2,13 @@ import { DefineFunction, Schema, SlackFunction } from "deno-slack-sdk/mod.ts";
 import { QuotesDatastore } from "../datastores/quotes.ts";
 import { ProductsDatastore } from "../datastores/products.ts";
 import { TenantSettingsDatastore } from "../datastores/tenant_settings.ts";
+import { AccountsDatastore } from "../datastores/accounts.ts";
 
 export const PostQuoteCardFunction = DefineFunction({
   callback_id: "post_quote_card",
   title: "Post Quote Card to Broadcast Channels",
   description:
-    "Powers the living CPQ matrix card and executes the Advanced Approval DM State Machine",
+    "Powers living CPQ matrix cards and executes Advanced Approval DMs",
   source_file: "functions/post_quote_card.ts",
   input_parameters: {
     properties: {
@@ -30,10 +31,8 @@ function testOperator(
   targetVal: string,
 ): boolean {
   if (actualVal === undefined || actualVal === null) return false;
-  const aStr = String(actualVal).trim();
-  const tStr = String(targetVal).trim();
-  const aNum = parseFloat(actualVal) || 0;
-  const tNum = parseFloat(targetVal) || 0;
+  const aStr = String(actualVal).trim(), tStr = String(targetVal).trim();
+  const aNum = parseFloat(actualVal) || 0, tNum = parseFloat(targetVal) || 0;
   switch (operator) {
     case "EQ":
       return aStr.toLowerCase() === tStr.toLowerCase();
@@ -60,13 +59,14 @@ function evaluateCondition(
   const { field_ref, operator, target_val } = cond;
   if (field_ref === "quote.total_amount") {
     let calc = 0;
-    lineItemsArr.forEach((i: any) => {
-      calc += (parseInt(i.qty, 10) || 1) * (parseFloat(i.unitPrice) || 0);
-    });
+    lineItemsArr.forEach((i: any) =>
+      calc += (parseInt(i.qty, 10) || 1) * (parseFloat(i.unitPrice) || 0)
+    );
     return testOperator(calc, operator, target_val);
   }
   if (field_ref === "quote.customer_name") {
-    return testOperator(quoteObj.name, operator, target_val);
+    return testOperator(quoteObj.description, operator, target_val) ||
+      testOperator(quoteObj.name, operator, target_val);
   }
   if (field_ref.startsWith("quote.custom_field_")) {
     return testOperator(
@@ -95,27 +95,23 @@ function formatInCardTable(items: any[], customFieldsSchema: any[]) {
   const headers = (customFieldsSchema || []).filter((f: any) =>
     f.show_on_table !== false
   ).map((f: any) => String(f.name || "Spec").toUpperCase());
-  const wProd = 15;
-  const wQty = 5;
-  const wPrice = 9;
-  const wCustom = 11;
-  const wSub = 10;
-  const totalW = wProd + wQty + wPrice + (headers.length * wCustom) + wSub;
-  const divider = "-".repeat(totalW) + "\n";
+  const wProd = 15, wQty = 5, wPrice = 9, wCustom = 11, wSub = 10;
+  const divider =
+    "-".repeat(wProd + wQty + wPrice + (headers.length * wCustom) + wSub) +
+    "\n";
 
   let str = tick3 + "\n" + String("PRODUCT").padEnd(wProd) +
     String("QTY").padStart(wQty) + String("PRICE").padStart(wPrice);
-  headers.forEach((h: string) => {
-    str += ("  " + h.substring(0, wCustom - 2)).padEnd(wCustom);
-  });
+  headers.forEach((h: string) =>
+    str += ("  " + h.substring(0, wCustom - 2)).padEnd(wCustom)
+  );
   str += String("SUBTOTAL").padStart(wSub) + "\n" + divider;
 
-  let sQty = 0;
-  let sTot = 0;
+  let sQty = 0, sTot = 0;
   items.forEach((i: any) => {
-    const q = parseInt(i.qty, 10) || 1;
-    const p = parseFloat(i.unitPrice) || 0;
-    const sub = q * p;
+    const q = parseInt(i.qty, 10) || 1,
+      p = parseFloat(i.unitPrice) || 0,
+      sub = q * p;
     sQty += q;
     sTot += sub;
     let rStr =
@@ -126,18 +122,17 @@ function formatInCardTable(items: any[], customFieldsSchema: any[]) {
         k.toUpperCase() === h
       );
       const val = mKey ? i.customSpecs[mKey] : "-";
-      rStr += ("  " +
-        (val !== undefined && val !== null && val !== "" ? String(val) : "-")
-          .substring(0, wCustom - 2)).padEnd(wCustom);
+      rStr +=
+        ("  " +
+          (val !== undefined && val !== null && val !== "" ? String(val) : "-")
+            .substring(0, wCustom - 2)).padEnd(wCustom);
     });
     str += rStr + ("$" + sub.toLocaleString()).padStart(wSub) + "\n";
   });
 
   str += divider + String("TOTALS").padEnd(wProd) +
     String(sQty).padStart(wQty) + "".padEnd(wPrice);
-  headers.forEach(() => {
-    str += "".padEnd(wCustom);
-  });
+  headers.forEach(() => str += "".padEnd(wCustom));
   return str + ("$" + sTot.toLocaleString()).padStart(wSub) + "\n" + tick3;
 }
 
@@ -145,7 +140,6 @@ function buildSafeDynamicInput(field: any, actionId: string, initVal?: any) {
   const safeStr = initVal !== undefined && initVal !== null && initVal !== ""
     ? String(initVal)
     : undefined;
-
   switch (field.type) {
     case "plain_text_input_multi":
       return {
@@ -155,78 +149,59 @@ function buildSafeDynamicInput(field: any, actionId: string, initVal?: any) {
         initial_value: safeStr,
       };
     case "datepicker":
-      return {
-        type: "datepicker",
-        action_id: actionId,
-        initial_date: safeStr ? safeStr : undefined,
-      };
+      return { type: "datepicker", action_id: actionId, initial_date: safeStr };
     case "timepicker":
-      return {
-        type: "timepicker",
-        action_id: actionId,
-        initial_time: safeStr ? safeStr : undefined,
-      };
+      return { type: "timepicker", action_id: actionId, initial_time: safeStr };
     case "multi_users_select":
       return { type: "multi_users_select", action_id: actionId };
-
     case "checkboxes": {
-      const rawOptions =
-        (field.dropdown_options && field.dropdown_options.length > 0)
-          ? field.dropdown_options
-          : ["No Options Configured"];
+      const rawOptions = (field.dropdown_options?.length > 0)
+        ? field.dropdown_options
+        : ["No Options Configured"];
       const blockKitCheckboxes = rawOptions.map((opt: string) => ({
         text: { type: "plain_text", text: String(opt).substring(0, 75) },
         value: String(opt).substring(0, 75),
       }));
-
       let initialCheckboxes: any[] = [];
       if (safeStr) {
-        const savedArr = safeStr.split(",").map((s) => s.trim());
         initialCheckboxes = blockKitCheckboxes.filter((bOpt) =>
-          savedArr.includes(bOpt.value)
+          safeStr.split(",").map((s) => s.trim()).includes(bOpt.value)
         );
       }
-
       const resObj: any = {
         type: "checkboxes",
         action_id: actionId,
         options: blockKitCheckboxes,
       };
-
       if (initialCheckboxes.length > 0) {
         resObj.initial_options = initialCheckboxes;
       }
       return resObj;
     }
-
     case "static_select":
     case "multi_static_select": {
-      const rawOptions =
-        (field.dropdown_options && field.dropdown_options.length > 0)
-          ? field.dropdown_options
-          : ["No Options Configured"];
+      const rawOptions = (field.dropdown_options?.length > 0)
+        ? field.dropdown_options
+        : ["No Options Configured"];
       const blockKitOptions = rawOptions.map((opt: string) => ({
         text: { type: "plain_text", text: String(opt).substring(0, 75) },
         value: String(opt).substring(0, 75),
       }));
-
       if (field.type === "static_select") {
-        const initOpt = safeStr
-          ? blockKitOptions.find((o) => o.value === safeStr)
-          : undefined;
         return {
           type: "static_select",
           action_id: actionId,
           placeholder: { type: "plain_text", text: "Select..." },
           options: blockKitOptions,
-          initial_option: initOpt,
+          initial_option: safeStr
+            ? blockKitOptions.find((o) => o.value === safeStr)
+            : undefined,
         };
       } else {
         let initialMultiOpts: any[] = [];
         if (safeStr) {
-          const savedArr = safeStr.split(",").map((s) => s.trim());
           initialMultiOpts = blockKitOptions.filter((bOpt) =>
-            savedArr.includes(bOpt.value)
+            safeStr.split(",").map((s) => s.trim()).includes(bOpt.value)
           );
         }
         const mObj: any = {
@@ -241,7 +216,6 @@ function buildSafeDynamicInput(field: any, actionId: string, initVal?: any) {
         return mObj;
       }
     }
-
     case "plain_text_input":
     default:
       return {
@@ -260,8 +234,6 @@ async function buildEditStepTwoView(
   pristineHash: string,
 ) {
   const refreshId = Math.floor(Math.random() * 1_000_000);
-
-  // 🎯 Explicitly queries solely active commercial SKUs matching Create flow!
   const [quoteRes, prodRes, schemaRes] = await Promise.all([
     client.apps.datastore.get({ datastore: QuotesDatastore.name, id: quoteId }),
     client.apps.datastore.query({
@@ -290,13 +262,10 @@ async function buildEditStepTwoView(
     });
   }
 
-  const customFieldsConfig = schemaRes.item?.custom_fields || [];
-
   const blocks: any[] = [{
     type: "header",
     text: { type: "plain_text", text: "Modify Inventory #" + quoteId },
   }];
-
   if (itemsArray.length === 0) {
     blocks.push({
       type: "section",
@@ -311,15 +280,14 @@ async function buildEditStepTwoView(
             .join(" | ");
       }
       const uPrice = parseFloat(item.unitPrice) || 0;
-      const subCalc = (parseInt(item.qty, 10) || 1) * uPrice;
-
       blocks.push({
         type: "section",
         text: {
           type: "mrkdwn",
           text: "*" + (idx + 1) + ". " + item.productName + "* | Qty: " +
             item.qty + " (@ $" + uPrice.toLocaleString() + ") - *$" +
-            subCalc.toLocaleString() + "*" + specPreview,
+            ((parseInt(item.qty, 10) || 1) * uPrice).toLocaleString() + "*" +
+            specPreview,
         },
         accessory: {
           type: "button",
@@ -376,7 +344,7 @@ async function buildEditStepTwoView(
     label: { type: "plain_text", text: "Unit Price ($)" },
   });
 
-  customFieldsConfig.forEach((fBlob: any, idx: number) => {
+  (schemaRes.item?.custom_fields || []).forEach((fBlob: any, idx: number) => {
     if (fBlob.show_on_form) {
       blocks.push({
         type: "input",
@@ -394,25 +362,21 @@ async function buildEditStepTwoView(
     message_ts: messageTs,
     pristine_hash: pristineHash,
   });
-
   blocks.push({
     type: "actions",
     block_id: "edit_modal_footer_actions",
-    elements: [
-      {
-        type: "button",
-        text: { type: "plain_text", text: "Back" },
-        action_id: "edit_back_to_step_one_btn",
-        value: packedMeta,
-      },
-      {
-        type: "button",
-        text: { type: "plain_text", text: "Attach Product" },
-        action_id: "edit_add_product_btn",
-        style: "primary",
-        value: packedMeta,
-      },
-    ],
+    elements: [{
+      type: "button",
+      text: { type: "plain_text", text: "Back" },
+      action_id: "edit_back_to_step_one_btn",
+      value: packedMeta,
+    }, {
+      type: "button",
+      text: { type: "plain_text", text: "Attach Product" },
+      action_id: "edit_add_product_btn",
+      style: "primary",
+      value: packedMeta,
+    }],
   });
 
   return {
@@ -425,6 +389,7 @@ async function buildEditStepTwoView(
   };
 }
 
+// 🎯 UPGRADED LIVING CARD: 6-Cell Balanced Grid
 async function buildLivingQuoteCard(
   client: any,
   quoteId: string,
@@ -450,14 +415,24 @@ async function buildLivingQuoteCard(
   const metaBlob = quote?.metadata ? JSON.parse(quote.metadata) : {};
   const itemsArr = quote?.line_items ? JSON.parse(quote.line_items) : [];
 
-  let calcTot = 0;
-  itemsArr.forEach((i: any) => {
-    calcTot += (parseInt(i.qty, 10) || 1) * (parseFloat(i.unitPrice) || 0);
-  });
+  // Fetch linked Account Name
+  const accId = quote?.description;
+  let accountDisplay = "Unassigned";
+  if (accId && accId !== "NO_ACCOUNT") {
+    const accRes = await client.apps.datastore.get({
+      datastore: AccountsDatastore.name,
+      id: accId,
+    });
+    accountDisplay = accRes.item?.name ? `${accRes.item.name}` : accId;
+  }
 
+  let calcTot = 0;
+  itemsArr.forEach((i: any) =>
+    calcTot += (parseInt(i.qty, 10) || 1) * (parseFloat(i.unitPrice) || 0)
+  );
   const formattedTotalDisplay = itemsArr.length > 0
     ? `$${calcTot.toLocaleString()}`
-    : `$${fallbackTotal.toLocaleString()} (Macro Estimate - 0 items attached)`;
+    : `$${fallbackTotal.toLocaleString()} (Estimate - 0 items)`;
 
   let statusText = "Pending Final Approval";
   if (quote?.approval_status === "APPROVED") statusText = "Fully Approved Deal";
@@ -466,23 +441,33 @@ async function buildLivingQuoteCard(
     const gauntlet = quote?.approval_gauntlet
       ? JSON.parse(quote.approval_gauntlet)
       : [];
-    const curIdx = quote?.current_approval_step || 0;
-    statusText = "Awaiting Step " + (curIdx + 1) + " of " + gauntlet.length +
-      " (<@" + gauntlet[curIdx] + ">)";
+    statusText = "Awaiting Step " + ((quote?.current_approval_step || 0) + 1) +
+      " of " + gauntlet.length + " (<@" +
+      gauntlet[quote?.current_approval_step || 0] + ">)";
   }
 
   const safeAuthorDisplay = repId && repId !== "undefined" && repId !== "null"
     ? `<@${repId}>`
     : "Author unrecorded";
 
+  // 🎯 TIMESTAMPS: Safely extracts born vs updated timestamps
+  const nowTs = Math.floor(Date.now() / 1000);
+  const createdTs = metaBlob._sys_created_at || nowTs;
+  const updatedTs = metaBlob._sys_updated_at || createdTs;
+
+  // 🎯 THE 6-CELL BALANCED GRID
   const coreGrid = [
+    { type: "mrkdwn", text: "*Account:*\n" + accountDisplay },
     { type: "mrkdwn", text: "*Total Value:*\n" + formattedTotalDisplay },
     { type: "mrkdwn", text: "*Status:*\n" + statusText },
     { type: "mrkdwn", text: "*Prepared By:*\n" + safeAuthorDisplay },
     {
       type: "mrkdwn",
-      text: "*Logged:*\n<!date^" + Math.floor(Date.now() / 1000) +
-        "^{date_num}|Today>",
+      text: "*Create Date:*\n<!date^" + createdTs + "^{date_num}|Date>",
+    },
+    {
+      type: "mrkdwn",
+      text: "*Last Modified:*\n<!date^" + updatedTs + "^{date_num}|Date>",
     },
   ];
 
@@ -497,6 +482,7 @@ async function buildLivingQuoteCard(
     { type: "divider" },
     { type: "section", fields: coreGrid },
   ];
+
   const cKeys = Object.keys(metaBlob).filter((k) =>
     k.startsWith("custom_field_")
   );
@@ -506,12 +492,14 @@ async function buildLivingQuoteCard(
       text: { type: "mrkdwn", text: "*Macro Specifications:*" },
     });
     cKeys.forEach((k) => {
-      const idx = parseInt(k.replace("custom_field_", ""), 10);
       blocks.push({
         type: "section",
         text: {
           type: "mrkdwn",
-          text: "*" + (qSchemaRes.item?.custom_fields?.[idx]?.name || "Spec") +
+          text: "*" +
+            (qSchemaRes.item?.custom_fields
+              ?.[parseInt(k.replace("custom_field_", ""), 10)]?.name ||
+              "Spec") +
             ":* " + metaBlob[k],
         },
       });
@@ -551,6 +539,7 @@ async function buildLivingQuoteCard(
   return blocks;
 }
 
+// 🎯 UPGRADED APPROVAL DM: 6-Cell Balanced Grid
 async function buildApprovalDMBlocks(
   client: any,
   quoteId: string,
@@ -577,23 +566,42 @@ async function buildApprovalDMBlocks(
   const auditTrail = quote.approval_audit_trail
     ? JSON.parse(quote.approval_audit_trail)
     : [];
+
+  const accId = quote.description;
+  let accountDisplay = "Unassigned";
+  if (accId && accId !== "NO_ACCOUNT") {
+    const accRes = await client.apps.datastore.get({
+      datastore: AccountsDatastore.name,
+      id: accId,
+    });
+    accountDisplay = accRes.item?.name ? `${accRes.item.name}` : accId;
+  }
+
   let calcTot = 0;
-  itemsArr.forEach((i: any) => {
-    calcTot += (parseInt(i.qty, 10) || 1) * (parseFloat(i.unitPrice) || 0);
-  });
+  itemsArr.forEach((i: any) =>
+    calcTot += (parseInt(i.qty, 10) || 1) * (parseFloat(i.unitPrice) || 0)
+  );
 
   const safeAuthorDisplay = quote.sales_rep_id
     ? `<@${quote.sales_rep_id}>`
     : "Author unrecorded";
 
+  const nowTs = Math.floor(Date.now() / 1000);
+  const createdTs = metaBlob._sys_created_at || nowTs;
+  const updatedTs = metaBlob._sys_updated_at || createdTs;
+
   const coreGrid = [
+    { type: "mrkdwn", text: "*Account:*\n" + accountDisplay },
     { type: "mrkdwn", text: "*Total Value:*\n$" + calcTot.toLocaleString() },
     { type: "mrkdwn", text: "*Status:*\nMandated Executive Review" },
     { type: "mrkdwn", text: "*Prepared By:*\n" + safeAuthorDisplay },
     {
       type: "mrkdwn",
-      text: "*Logged:*\n<!date^" + Math.floor(Date.now() / 1000) +
-        "^{date_num}|Today>",
+      text: "*Create Date:*\n<!date^" + createdTs + "^{date_num}|Date>",
+    },
+    {
+      type: "mrkdwn",
+      text: "*Last Modified:*\n<!date^" + updatedTs + "^{date_num}|Date>",
     },
   ];
 
@@ -608,6 +616,7 @@ async function buildApprovalDMBlocks(
     { type: "divider" },
     { type: "section", fields: coreGrid },
   ];
+
   const cKeys = Object.keys(metaBlob).filter((k) =>
     k.startsWith("custom_field_")
   );
@@ -617,12 +626,14 @@ async function buildApprovalDMBlocks(
       text: { type: "mrkdwn", text: "*Macro Specifications:*" },
     });
     cKeys.forEach((k) => {
-      const idx = parseInt(k.replace("custom_field_", ""), 10);
       blocks.push({
         type: "section",
         text: {
           type: "mrkdwn",
-          text: "*" + (qSchemaRes.item?.custom_fields?.[idx]?.name || "Spec") +
+          text: "*" +
+            (qSchemaRes.item?.custom_fields
+              ?.[parseInt(k.replace("custom_field_", ""), 10)]?.name ||
+              "Spec") +
             ":* " + metaBlob[k],
         },
       });
@@ -643,7 +654,6 @@ async function buildApprovalDMBlocks(
   const humanDecisionsOnly = auditTrail.filter((entry: any) =>
     entry.decision === "APPROVE" || entry.decision === "REJECT"
   );
-
   if (humanDecisionsOnly.length > 0) {
     blocks.push({ type: "divider" }, {
       type: "section",
@@ -663,7 +673,6 @@ async function buildApprovalDMBlocks(
   const gauntlet = quote.approval_gauntlet
     ? JSON.parse(quote.approval_gauntlet)
     : [];
-  const curStep = quote.current_approval_step || 0;
   const packedState = JSON.stringify({
     quote_id: quoteId,
     thread_ts: threadTs,
@@ -675,8 +684,9 @@ async function buildApprovalDMBlocks(
       type: "section",
       text: {
         type: "mrkdwn",
-        text: "*Execution Relay:* You are Step " + (curStep + 1) + " of " +
-          gauntlet.length + " in the mandated deal desk sign-off chain.",
+        text: "*Execution Relay:* You are Step " +
+          ((quote.current_approval_step || 0) + 1) + " of " + gauntlet.length +
+          " in the mandated deal desk sign-off chain.",
       },
     },
   );
@@ -714,14 +724,18 @@ async function buildApprovalDMBlocks(
   return blocks;
 }
 
-// 🎯 SMART DISPATCHER: Captures fresh API receipts into NoSQL tracking collar
 async function dispatchFreshApprovalDM(
   client: any,
   quoteObj: any,
   targetApproverId: string,
   threadTs: string,
 ) {
-  const blocks = await buildApprovalDMBlocks(client, quoteObj.id, threadTs, false);
+  const blocks = await buildApprovalDMBlocks(
+    client,
+    quoteObj.id,
+    threadTs,
+    false,
+  );
   if (!blocks) return null;
 
   const postRes = await client.chat.postMessage({
@@ -729,7 +743,6 @@ async function dispatchFreshApprovalDM(
     blocks,
     text: "Approval requested for #" + quoteObj.id,
   });
-
   if (postRes.ok) {
     quoteObj.active_dm_channel = postRes.channel;
     quoteObj.active_dm_ts = postRes.ts;
@@ -738,7 +751,6 @@ async function dispatchFreshApprovalDM(
       item: quoteObj,
     });
   }
-
   return postRes;
 }
 
@@ -754,19 +766,21 @@ export default SlackFunction(
       if (!quote) return { completed: false };
 
       quote.sales_rep_id = inputs.sales_rep_id;
-
       const metaBlob = quote.metadata ? JSON.parse(quote.metadata) : {};
       const itemsArr = quote.line_items ? JSON.parse(quote.line_items) : [];
-      const pSchemaRes = await client.apps.datastore.get({
-        datastore: TenantSettingsDatastore.name,
-        id: "schema_quote_product",
-      });
-      const pSchema = pSchemaRes.item?.custom_fields || [];
 
-      const rulesRes = await client.apps.datastore.get({
-        datastore: TenantSettingsDatastore.name,
-        id: "advanced_approval_rules",
-      });
+      const [pSchemaRes, rulesRes] = await Promise.all([
+        client.apps.datastore.get({
+          datastore: TenantSettingsDatastore.name,
+          id: "schema_quote_product",
+        }),
+        client.apps.datastore.get({
+          datastore: TenantSettingsDatastore.name,
+          id: "advanced_approval_rules",
+        }),
+      ]);
+
+      const pSchema = pSchemaRes.item?.custom_fields || [];
       const rawRulesArray = rulesRes.item?.approval_rules
         ? JSON.parse(rulesRes.item.approval_rules)
         : [];
@@ -774,8 +788,7 @@ export default SlackFunction(
       let compiledGauntlet: string[] = [];
       rawRulesArray.forEach((rule: any) => {
         const conditionsArray: any[] = rule.conditions || [];
-        const isAnd = rule.match_type === "AND";
-        const isTriggered = isAnd
+        const isTriggered = (rule.match_type === "AND")
           ? conditionsArray.every((c) =>
             evaluateCondition(c, quote, itemsArr, metaBlob, pSchema)
           )
@@ -783,11 +796,11 @@ export default SlackFunction(
             evaluateCondition(c, quote, itemsArr, metaBlob, pSchema)
           );
         if (isTriggered) {
-          const stepApprovers =
-            rule.approver_ids && Array.isArray(rule.approver_ids)
+          compiledGauntlet.push(
+            ...(Array.isArray(rule.approver_ids)
               ? rule.approver_ids
-              : (rule.approver_id ? [rule.approver_id] : []);
-          compiledGauntlet.push(...stepApprovers);
+              : (rule.approver_id ? [rule.approver_id] : [])),
+          );
         }
       });
 
@@ -811,7 +824,6 @@ export default SlackFunction(
         datastore: TenantSettingsDatastore.name,
         id: "schema_quote",
       });
-
       let rooms: string[] = [];
       if (settingsRes.ok && settingsRes.item?.broadcast_channels) {
         try {
@@ -819,10 +831,9 @@ export default SlackFunction(
         } catch (e) { /**/ }
       }
 
-      const validRooms = Array.isArray(rooms) && rooms.length > 0
+      const validRooms = (Array.isArray(rooms) && rooms.length > 0)
         ? rooms.map((r: string) => r.trim()).filter(Boolean)
         : [inputs.sales_rep_id];
-
       const primaryRoom = validRooms[0];
       quote.broadcast_channel_id = primaryRoom;
 
@@ -834,7 +845,6 @@ export default SlackFunction(
         inputs.sales_rep_id,
         false,
       );
-
       const primaryDispatch = await client.chat.postMessage({
         channel: primaryRoom,
         blocks: cardBlocks,
@@ -844,43 +854,48 @@ export default SlackFunction(
       if (!primaryDispatch.ok) {
         await client.chat.postMessage({
           channel: inputs.sales_rep_id,
-          text: `SYSTEM ALERT: Failed to post Quote #${inputs.quote_id} to <#${primaryRoom}>. Please type /invite @Spere inside that room.`,
+          text:
+            `SYSTEM ALERT: Failed to post Quote #${inputs.quote_id} to <#${primaryRoom}>. Invite @Spere to room.`,
         });
         return { completed: false };
       }
 
       const capturedThreadTs = primaryDispatch.ts;
       quote.broadcast_thread_ts = capturedThreadTs;
-
-      const instanceLedger: { channel_id: string; ts: string; is_primary: boolean }[] = [
-        { channel_id: primaryRoom, ts: capturedThreadTs, is_primary: true },
-      ];
+      const instanceLedger: {
+        channel_id: string;
+        ts: string;
+        is_primary: boolean;
+      }[] = [{
+        channel_id: primaryRoom,
+        ts: capturedThreadTs,
+        is_primary: true,
+      }];
 
       if (validRooms.length > 1) {
         const secondaryRooms = validRooms.slice(1);
-        const secondaryBlocks = [
-          ...cardBlocks,
-          {
-            type: "context",
-            elements: [{
-              type: "mrkdwn",
-              text: `*Quote Copy:* Official Deal Desk sign-offs and consensus audits are being tracked inside <#${primaryRoom}>.`,
-            }],
-          },
-        ];
-
+        const secondaryBlocks = [...cardBlocks, {
+          type: "context",
+          elements: [{
+            type: "mrkdwn",
+            text:
+              `*Quote Copy:* Official Deal Desk sign-offs tracked in <#${primaryRoom}>.`,
+          }],
+        }];
         const secondaryDispatches = await Promise.allSettled(
           secondaryRooms.map((targetChan) =>
             client.chat.postMessage({
               channel: targetChan,
               blocks: secondaryBlocks,
-              text: `Quote #${inputs.quote_id} Logged (Broadcast)`,
+              text: `Quote #${inputs.quote_id} Logged`,
             })
-          )
+          ),
         );
-
         secondaryDispatches.forEach((receipt, idx) => {
-          if (receipt.status === "fulfilled" && receipt.value.ok && receipt.value.ts) {
+          if (
+            receipt.status === "fulfilled" && receipt.value.ok &&
+            receipt.value.ts
+          ) {
             instanceLedger.push({
               channel_id: secondaryRooms[idx],
               ts: receipt.value.ts,
@@ -891,7 +906,6 @@ export default SlackFunction(
       }
 
       quote.card_instances = JSON.stringify(instanceLedger);
-
       await client.apps.datastore.put({
         datastore: QuotesDatastore.name,
         item: quote,
@@ -908,30 +922,26 @@ export default SlackFunction(
     } catch (fatalError: any) {
       await client.chat.postMessage({
         channel: inputs.sales_rep_id,
-        text: `CRITICAL WORKER CRASH: Runtime threw: ${
-          fatalError.message || fatalError
-        }`,
+        text: `CRITICAL CRASH: ${fatalError.message || fatalError}`,
       });
     }
-
     return { completed: false };
   },
 )
   .addBlockActionsHandler(
     ["expand_ledger_action"],
     async ({ action, body, client }) => {
-      const updatedBlocks = await buildLivingQuoteCard(
-        client,
-        action.value,
-        "Customer",
-        0,
-        body.user.id,
-        true,
-      );
       await client.chat.update({
         channel: body.container.channel_id,
         ts: body.container.message_ts,
-        blocks: updatedBlocks,
+        blocks: await buildLivingQuoteCard(
+          client,
+          action.value,
+          "Customer",
+          0,
+          body.user.id,
+          true,
+        ),
         text: "Expanded",
       });
       return { completed: false };
@@ -940,18 +950,17 @@ export default SlackFunction(
   .addBlockActionsHandler(
     ["collapse_ledger_action"],
     async ({ action, body, client }) => {
-      const updatedBlocks = await buildLivingQuoteCard(
-        client,
-        action.value,
-        "Customer",
-        0,
-        body.user.id,
-        false,
-      );
       await client.chat.update({
         channel: body.container.channel_id,
         ts: body.container.message_ts,
-        blocks: updatedBlocks,
+        blocks: await buildLivingQuoteCard(
+          client,
+          action.value,
+          "Customer",
+          0,
+          body.user.id,
+          false,
+        ),
         text: "Collapsed",
       });
       return { completed: false };
@@ -961,17 +970,16 @@ export default SlackFunction(
     ["dm_expand_ledger"],
     async ({ action, body, client }) => {
       const state = JSON.parse(action.value);
-      const updatedBlocks = await buildApprovalDMBlocks(
-        client,
-        state.quote_id,
-        state.thread_ts,
-        true,
-      );
       await client.chat.update({
         channel: body.container.channel_id,
         ts: body.container.message_ts,
-        blocks: updatedBlocks,
-        text: "Approval requested",
+        blocks: await buildApprovalDMBlocks(
+          client,
+          state.quote_id,
+          state.thread_ts,
+          true,
+        ),
+        text: "Expanded",
       });
       return { completed: false };
     },
@@ -980,17 +988,16 @@ export default SlackFunction(
     ["dm_collapse_ledger"],
     async ({ action, body, client }) => {
       const state = JSON.parse(action.value);
-      const updatedBlocks = await buildApprovalDMBlocks(
-        client,
-        state.quote_id,
-        state.thread_ts,
-        false,
-      );
       await client.chat.update({
         channel: body.container.channel_id,
         ts: body.container.message_ts,
-        blocks: updatedBlocks,
-        text: "Approval requested",
+        blocks: await buildApprovalDMBlocks(
+          client,
+          state.quote_id,
+          state.thread_ts,
+          false,
+        ),
+        text: "Collapsed",
       });
       return { completed: false };
     },
@@ -999,9 +1006,7 @@ export default SlackFunction(
     ["edit_back_to_step_one_btn"],
     async ({ action, body, client }) => {
       const metaContext = JSON.parse(action.value);
-      const vId = body.view?.id;
-      if (!vId) return { completed: false };
-
+      if (!body.view?.id) return { completed: false };
       const qRes = await client.apps.datastore.get({
         datastore: QuotesDatastore.name,
         id: metaContext.quote_id,
@@ -1009,16 +1014,11 @@ export default SlackFunction(
       const metaBlob = qRes.item?.metadata
         ? JSON.parse(qRes.item.metadata)
         : {};
-
       const schemaRes = await client.apps.datastore.get({
         datastore: TenantSettingsDatastore.name,
         id: "schema_quote",
       });
-      const customFields = schemaRes.item?.custom_fields || [];
 
-      const safeName = (qRes.item?.name && qRes.item.name !== "")
-        ? qRes.item.name
-        : "Draft Quote";
       const formBlocks: any[] = [
         {
           type: "header",
@@ -1033,27 +1033,30 @@ export default SlackFunction(
           element: {
             type: "plain_text_input",
             action_id: "name_input",
-            initial_value: safeName,
+            initial_value: qRes.item?.name || "Draft Quote",
           },
           label: { type: "plain_text", text: "Record Name" },
         },
       ];
 
-      customFields.forEach((f: any, idx: number) => {
+      (schemaRes.item?.custom_fields || []).forEach((f: any, idx: number) => {
         if (f.show_on_form) {
-          const savedValue = metaBlob[`custom_field_${idx}`] || undefined;
           formBlocks.push({
             type: "input",
             block_id: `custom_field_${idx}`,
             optional: !f.required,
-            element: buildSafeDynamicInput(f, `action_${idx}`, savedValue),
+            element: buildSafeDynamicInput(
+              f,
+              `action_${idx}`,
+              metaBlob[`custom_field_${idx}`],
+            ),
             label: { type: "plain_text", text: f.name || "Field" },
           });
         }
       });
 
       await client.views.update({
-        view_id: vId,
+        view_id: body.view.id,
         view: {
           type: "modal",
           callback_id: "submit_edit_step_one_modal",
@@ -1070,13 +1073,13 @@ export default SlackFunction(
     ["edit_quote_action"],
     async ({ action, body, client }) => {
       const qId = action.value;
-      const ptr = body.interactivity.interactivity_pointer;
       const qRes = await client.apps.datastore.get({
         datastore: QuotesDatastore.name,
         id: qId,
       });
-
-      const metaBlob = qRes.item?.metadata ? JSON.parse(qRes.item.metadata) : {};
+      const metaBlob = qRes.item?.metadata
+        ? JSON.parse(qRes.item.metadata)
+        : {};
       const schemaRes = await client.apps.datastore.get({
         datastore: TenantSettingsDatastore.name,
         id: "schema_quote",
@@ -1087,14 +1090,19 @@ export default SlackFunction(
         meta: qRes.item?.metadata || "{}",
         items: qRes.item?.line_items || "[]",
       });
-
-      const safeName = (qRes.item?.name && qRes.item.name !== "") ? qRes.item.name : "Draft Quote";
       const formBlocks: any[] = [
-        { type: "header", text: { type: "plain_text", text: "Modify Specs #" + qId } },
+        {
+          type: "header",
+          text: { type: "plain_text", text: "Modify Specs #" + qId },
+        },
         {
           type: "input",
           block_id: "edit_name_block",
-          element: { type: "plain_text_input", action_id: "name_input", initial_value: safeName },
+          element: {
+            type: "plain_text_input",
+            action_id: "name_input",
+            initial_value: qRes.item?.name || "Draft Quote",
+          },
           label: { type: "plain_text", text: "Record Name" },
         },
       ];
@@ -1105,7 +1113,11 @@ export default SlackFunction(
             type: "input",
             block_id: `custom_field_${idx}`,
             optional: !f.required,
-            element: buildSafeDynamicInput(f, `action_${idx}`, metaBlob[`custom_field_${idx}`]),
+            element: buildSafeDynamicInput(
+              f,
+              `action_${idx}`,
+              metaBlob[`custom_field_${idx}`],
+            ),
             label: { type: "plain_text", text: f.name || "Field" },
           });
         }
@@ -1117,9 +1129,8 @@ export default SlackFunction(
         message_ts: body.container.message_ts,
         pristine_hash: pristinePayload,
       });
-
       await client.views.open({
-        interactivity_pointer: ptr,
+        interactivity_pointer: body.interactivity.interactivity_pointer,
         view: {
           type: "modal",
           callback_id: "submit_edit_step_one_modal",
@@ -1135,31 +1146,42 @@ export default SlackFunction(
   .addViewSubmissionHandler(
     ["submit_edit_step_one_modal"],
     async ({ view, client }) => {
-      const meta = JSON.parse(view.private_metadata);
-      const vals = view.state.values;
+      const meta = JSON.parse(view.private_metadata), vals = view.state.values;
       const newBlob: Record<string, any> = {};
 
       for (const [blockId, actionObj] of Object.entries(vals)) {
         if (blockId.startsWith("custom_field_")) {
           const aData = (actionObj as any)[Object.keys(actionObj as object)[0]];
-          let typedVal = null;
-          if (aData?.value) typedVal = aData.value;
-          else if (aData?.selected_date) typedVal = aData.selected_date;
-          else if (aData?.selected_time) typedVal = aData.selected_time;
-          else if (aData?.selected_users) typedVal = aData.selected_users.join(", ");
-          else if (aData?.selected_option) typedVal = aData.selected_option.value;
-          else if (aData?.selected_options) typedVal = aData.selected_options.map((o: any) => o.value).join(", ");
-
+          const typedVal = aData?.value ?? aData?.selected_date ??
+            aData?.selected_time ?? aData?.selected_option?.value ??
+            aData?.selected_users?.join(", ") ??
+            aData?.selected_options?.map((o: any) => o.value).join(", ");
           if (typedVal) newBlob[blockId] = typedVal;
         }
       }
 
-      const qRes = await client.apps.datastore.get({ datastore: QuotesDatastore.name, id: meta.quote_id });
+      const qRes = await client.apps.datastore.get({
+        datastore: QuotesDatastore.name,
+        id: meta.quote_id,
+      });
       if (qRes.ok && qRes.item) {
-        const updatedName = vals.edit_name_block?.name_input?.value || qRes.item.name || "Draft Quote";
-        qRes.item.name = updatedName;
-        qRes.item.metadata = JSON.stringify(newBlob);
-        await client.apps.datastore.put({ datastore: QuotesDatastore.name, item: qRes.item });
+        const oldMeta = qRes.item.metadata
+          ? JSON.parse(qRes.item.metadata)
+          : {};
+
+        // 🎯 STAMP UPDATE DATE ON METADATA EDIT
+        const mergedMeta = {
+          ...oldMeta,
+          ...newBlob,
+          _sys_updated_at: Math.floor(Date.now() / 1000),
+        };
+        qRes.item.name = vals.edit_name_block?.name_input?.value ||
+          qRes.item.name;
+        qRes.item.metadata = JSON.stringify(mergedMeta);
+        await client.apps.datastore.put({
+          datastore: QuotesDatastore.name,
+          item: qRes.item,
+        });
       }
 
       return {
@@ -1178,8 +1200,7 @@ export default SlackFunction(
     ["remove_edit_line_item_action"],
     async ({ action, body, client }) => {
       const p = JSON.parse(action.value);
-      const vId = body.view?.id;
-      if (!vId) return { completed: false };
+      if (!body.view?.id) return { completed: false };
       const qRes = await client.apps.datastore.get({
         datastore: QuotesDatastore.name,
         id: p.quote_id,
@@ -1188,12 +1209,20 @@ export default SlackFunction(
         const items = JSON.parse(qRes.item.line_items || "[]");
         items.splice(p.index, 1);
         qRes.item.line_items = JSON.stringify(items);
+
+        // 🎯 STAMP UPDATE DATE ON ITEM REMOVAL
+        const metaBlob = qRes.item.metadata
+          ? JSON.parse(qRes.item.metadata)
+          : {};
+        metaBlob._sys_updated_at = Math.floor(Date.now() / 1000);
+        qRes.item.metadata = JSON.stringify(metaBlob);
+
         await client.apps.datastore.put({
           datastore: QuotesDatastore.name,
           item: qRes.item,
         });
         await client.views.update({
-          view_id: vId,
+          view_id: body.view.id,
           view: await buildEditStepTwoView(
             client,
             p.quote_id,
@@ -1209,60 +1238,51 @@ export default SlackFunction(
   .addBlockActionsHandler(
     ["edit_add_product_btn"],
     async ({ action, body, client }) => {
-      const metaContext = JSON.parse(action.value);
-      const vId = body.view?.id;
-      const vals = body.view?.state.values || {};
+      const metaContext = JSON.parse(action.value),
+        vId = body.view?.id,
+        vals = body.view?.state.values || {};
       const schemaRes = await client.apps.datastore.get({
         datastore: TenantSettingsDatastore.name,
         id: "schema_quote_product",
       });
       const customFields = schemaRes.item?.custom_fields || [];
 
-      let selProd = "none";
-      let qty = "1";
-      let price = "0";
+      let selProd = "none", qty = "1", price = "0";
       const specs: Record<string, any> = {};
 
       for (const [bId, aObj] of Object.entries(vals)) {
         if (bId.startsWith("prod_select_")) {
           selProd = (aObj as any).catalog_select?.selected_option?.value ||
-            (aObj as any).product_select?.selected_option?.value || "none";
+            "none";
         }
-        if (bId.startsWith("qty_input_")) {
-          qty = (aObj as any).qty_val?.value ||
-            (aObj as any).qty_input?.value || "1";
-        }
+        if (bId.startsWith("qty_input_")) {qty = (aObj as any).qty_val?.value ||
+            "1";}
         if (bId.startsWith("price_input_")) {
-          price = (aObj as any).price_val?.value ||
-            (aObj as any).unit_price_input?.value || "0";
+          price = (aObj as any).price_val?.value || "0";
         }
-
         if (bId.startsWith("item_custom_")) {
-          const fIdx = parseInt(bId.split("_")[2], 10);
-          const configuredLabel = customFields[fIdx]?.name ||
-            "Spec " + (fIdx + 1);
-          const aData = (aObj as any)[Object.keys(aObj as object)[0]];
-
-          const extVal = aData?.value ?? aData?.selected_date ??
-            aData?.selected_time ??
-            (aData?.selected_option ? aData.selected_option.value : null) ??
-            (aData?.selected_options
-              ? aData.selected_options.map((o: any) => o.value).join(", ")
-              : null);
-
-          if (extVal) specs[configuredLabel] = extVal;
+          const extVal = (aObj as any)[Object.keys(aObj as object)[0]]?.value ??
+            (aObj as any)[Object.keys(aObj as object)[0]]?.selected_option
+              ?.value;
+          if (extVal) {
+            specs[
+              customFields[parseInt(bId.split("_")[2], 10)]?.name || "Spec"
+            ] = extVal;
+          }
         }
       }
 
       if (selProd !== "none" && vId) {
-        const pRes = await client.apps.datastore.get({
-          datastore: ProductsDatastore.name,
-          id: selProd,
-        });
-        const qRes = await client.apps.datastore.get({
-          datastore: QuotesDatastore.name,
-          id: metaContext.quote_id,
-        });
+        const [pRes, qRes] = await Promise.all([
+          client.apps.datastore.get({
+            datastore: ProductsDatastore.name,
+            id: selProd,
+          }),
+          client.apps.datastore.get({
+            datastore: QuotesDatastore.name,
+            id: metaContext.quote_id,
+          }),
+        ]);
         if (qRes.ok && qRes.item) {
           const items = JSON.parse(qRes.item.line_items || "[]");
           items.push({
@@ -1292,9 +1312,6 @@ export default SlackFunction(
       return { completed: false };
     },
   )
-  // ===========================================================================
-  // 🎯 THE SILENT DEBOUNCER: Updates un-decided DM cards in-place silently
-  // ===========================================================================
   .addViewSubmissionHandler(
     ["finalize_edit_step_two_modal"],
     async ({ view, client }) => {
@@ -1316,51 +1333,68 @@ export default SlackFunction(
         items: quote.line_items || "[]",
       });
       const isMutated = meta.pristine_hash !== activePayload;
-
       let statusNote = "Ledger modifications committed.";
 
       if (isMutated) {
         const [pSchemaRes, rulesRes] = await Promise.all([
-          client.apps.datastore.get({ datastore: TenantSettingsDatastore.name, id: "schema_quote_product" }),
-          client.apps.datastore.get({ datastore: TenantSettingsDatastore.name, id: "advanced_approval_rules" }),
+          client.apps.datastore.get({
+            datastore: TenantSettingsDatastore.name,
+            id: "schema_quote_product",
+          }),
+          client.apps.datastore.get({
+            datastore: TenantSettingsDatastore.name,
+            id: "advanced_approval_rules",
+          }),
         ]);
-
-        const pSchema = pSchemaRes.item?.custom_fields || [];
-        const rawRules = rulesRes.item?.approval_rules ? JSON.parse(rulesRes.item.approval_rules) : [];
+        const pSchema = pSchemaRes.item?.custom_fields || [],
+          rawRules = rulesRes.item?.approval_rules
+            ? JSON.parse(rulesRes.item.approval_rules)
+            : [];
 
         const metaBlob = quote.metadata ? JSON.parse(quote.metadata) : {};
-        const itemsArr = quote.line_items ? JSON.parse(quote.line_items) : [];
 
+        // 🎯 STAMP UPDATE DATE UPON INVENTORY CHANGE SAVE
+        metaBlob._sys_updated_at = Math.floor(Date.now() / 1000);
+        quote.metadata = JSON.stringify(metaBlob);
+
+        const itemsArr = quote.line_items ? JSON.parse(quote.line_items) : [];
         let newGauntlet: string[] = [];
         rawRules.forEach((rule: any) => {
-          const conditions: any[] = rule.conditions || [];
-          const isAnd = rule.match_type === "AND";
-          const isTriggered = isAnd
-            ? conditions.every((c) => evaluateCondition(c, quote, itemsArr, metaBlob, pSchema))
-            : conditions.some((c) => evaluateCondition(c, quote, itemsArr, metaBlob, pSchema));
-
+          const isTriggered = (rule.match_type === "AND")
+            ? (rule.conditions || []).every((c: any) =>
+              evaluateCondition(c, quote, itemsArr, metaBlob, pSchema)
+            )
+            : (rule.conditions || []).some((c: any) =>
+              evaluateCondition(c, quote, itemsArr, metaBlob, pSchema)
+            );
           if (isTriggered) {
-            const approvers = Array.isArray(rule.approver_ids) ? rule.approver_ids : (rule.approver_id ? [rule.approver_id] : []);
-            newGauntlet.push(...approvers);
+            newGauntlet.push(
+              ...(Array.isArray(rule.approver_ids)
+                ? rule.approver_ids
+                : (rule.approver_id ? [rule.approver_id] : [])),
+            );
           }
         });
 
         newGauntlet = [...new Set(newGauntlet)];
-        const auditTrail = quote.approval_audit_trail ? JSON.parse(quote.approval_audit_trail) : [];
+        const auditTrail = quote.approval_audit_trail
+          ? JSON.parse(quote.approval_audit_trail)
+          : [];
 
         if (newGauntlet.length === 0) {
           quote.approval_status = "APPROVED";
           quote.approval_gauntlet = "[]";
           quote.current_approval_step = 0;
-          quote.active_dm_channel = ""; // Wipe tracking collar
+          quote.active_dm_channel = "";
           quote.active_dm_ts = "";
-          statusNote = "*Consensus Re-Calculated:* Deal remains within operating parameters. No approval mandated.";
-          await client.apps.datastore.put({ datastore: QuotesDatastore.name, item: quote });
+          statusNote = "*Consensus Re-Calculated:* Deal within parameters.";
+          await client.apps.datastore.put({
+            datastore: QuotesDatastore.name,
+            item: quote,
+          });
         } else {
-          // 🚨 Interrogate the hard drive for the active tracking collar coordinates
-          const existingCollarChan = quote.active_dm_channel;
-          const existingCollarTs = quote.active_dm_ts;
-
+          const existingCollarChan = quote.active_dm_channel,
+            existingCollarTs = quote.active_dm_ts;
           let safeTier = quote.current_approval_step || 0;
           if (safeTier >= newGauntlet.length) safeTier = 0;
           const targetApprover = newGauntlet[safeTier];
@@ -1368,96 +1402,106 @@ export default SlackFunction(
           if (quote.approval_status === "PENDING_GAUNTLET") {
             quote.approval_gauntlet = JSON.stringify(newGauntlet);
             quote.current_approval_step = safeTier;
-
             auditTrail.push({
               approver_id: rep,
               decision: "EDIT_IN_FLIGHT",
-              note: `Specifications amended mid-review. Ledger consensus dynamically refreshed at Step ${safeTier + 1}.`,
+              note: `Specs amended mid-review. Refreshed Step ${safeTier + 1}.`,
               timestamp: Math.floor(Date.now() / 1000),
             });
             quote.approval_audit_trail = JSON.stringify(auditTrail);
+            await client.apps.datastore.put({
+              datastore: QuotesDatastore.name,
+              item: quote,
+            });
 
-            await client.apps.datastore.put({ datastore: QuotesDatastore.name, item: quote });
-
-            // 🎯 Coordinates exist! Execute a completely silent in-place update on the open DM card
             if (existingCollarChan && existingCollarTs && targetApprover) {
-              const refreshedDmBlocks = await buildApprovalDMBlocks(client, meta.quote_id, primaryTs, false);
+              const refreshedDmBlocks = await buildApprovalDMBlocks(
+                client,
+                meta.quote_id,
+                primaryTs,
+                false,
+              );
               if (refreshedDmBlocks) {
                 await client.chat.update({
                   channel: existingCollarChan,
                   ts: existingCollarTs,
                   blocks: refreshedDmBlocks,
-                  text: `Approval sign-off request #${meta.quote_id} refreshed`,
+                  text: `Approval #${meta.quote_id} refreshed`,
                 });
-                statusNote = `Refreshed active approval card inside <@${targetApprover}>'s DMs.`;
               }
             } else if (targetApprover) {
-              await dispatchFreshApprovalDM(client, quote, targetApprover, primaryTs);
-              statusNote = `*Amendment Detected:* Dispatched fresh sign-off request to Step ${safeTier + 1} (<@${targetApprover}>).`;
+              await dispatchFreshApprovalDM(
+                client,
+                quote,
+                targetApprover,
+                primaryTs,
+              );
             }
-          } else if (quote.approval_status === "APPROVED" || quote.approval_status === "REJECTED") {
+          } else {
             quote.approval_status = "PENDING_GAUNTLET";
             quote.approval_gauntlet = JSON.stringify(newGauntlet);
             quote.current_approval_step = 0;
-
             auditTrail.push({
               approver_id: rep,
               decision: "ESCALATE",
-              note: "System detected specification amendments crossing Deal Desk thresholds. Initiating gauntlet at Step 1.",
+              note:
+                "Amendments crossed Deal Desk thresholds. Initiating Step 1.",
               timestamp: Math.floor(Date.now() / 1000),
             });
             quote.approval_audit_trail = JSON.stringify(auditTrail);
-
-            const rootApprover = newGauntlet[0];
-            if (rootApprover) {
-              await dispatchFreshApprovalDM(client, quote, rootApprover, primaryTs);
-              statusNote = `*Amendment Detected:* Re-submitting contract directly back to Step 1 (<@${rootApprover}>).`;
-            } else {
-              await client.apps.datastore.put({ datastore: QuotesDatastore.name, item: quote });
-            }
+            if (newGauntlet[0]) {
+              await dispatchFreshApprovalDM(
+                client,
+                quote,
+                newGauntlet[0],
+                primaryTs,
+              );
+            } else {await client.apps.datastore.put({
+                datastore: QuotesDatastore.name,
+                item: quote,
+              });}
           }
         }
       }
 
-      let instancesToUpdate: { channel_id: string; ts: string; is_primary: boolean }[] = [];
-      try {
-        if (quote.card_instances) instancesToUpdate = JSON.parse(quote.card_instances);
-      } catch (e) { /**/ }
+      const instancesToUpdate = quote.card_instances
+        ? JSON.parse(quote.card_instances)
+        : [{ channel_id: primaryChan, ts: primaryTs, is_primary: true }];
+      const updatedBlocksPrimary = await buildLivingQuoteCard(
+        client,
+        meta.quote_id,
+        quote.name,
+        0,
+        rep,
+        false,
+      );
+      const updatedBlocksSecondary = [...updatedBlocksPrimary, {
+        type: "context",
+        elements: [{
+          type: "mrkdwn",
+          text: `*Quote Copy:* Tracked in <#${primaryChan}>.`,
+        }],
+      }];
 
-      if (instancesToUpdate.length === 0) {
-        instancesToUpdate.push({ channel_id: primaryChan, ts: primaryTs, is_primary: true });
-      }
-
-      const updatedBlocksPrimary = await buildLivingQuoteCard(client, meta.quote_id, quote.name, 0, rep, false);
-      const updatedBlocksSecondary = [
-        ...updatedBlocksPrimary,
-        {
-          type: "context",
-          elements: [{
-            type: "mrkdwn",
-            text: `*Quote Copy:* Official Deal Desk sign-offs and consensus audits are being tracked inside <#${primaryChan}>.`,
-          }],
-        },
-      ];
-
-      const apiOperations: Promise<any>[] = instancesToUpdate.map((instance) =>
+      const apiOps = instancesToUpdate.map((inst: any) =>
         client.chat.update({
-          channel: instance.channel_id,
-          ts: instance.ts,
-          blocks: instance.is_primary ? updatedBlocksPrimary : updatedBlocksSecondary,
+          channel: inst.channel_id,
+          ts: inst.ts,
+          blocks: inst.is_primary
+            ? updatedBlocksPrimary
+            : updatedBlocksSecondary,
           text: `Quote #${meta.quote_id} Updated`,
         })
       );
-
-      apiOperations.push(
+      apiOps.push(
         client.chat.postMessage({
           channel: primaryChan,
           thread_ts: primaryTs,
-          text: `<@${rep}> successfully committed product ledger modifications for Quote #${meta.quote_id}.\n> ${statusNote}`,
-        })
+          text:
+            `<@${rep}> committed ledger modifications for Quote #${meta.quote_id}.\n> ${statusNote}`,
+        }),
       );
-
-      await Promise.allSettled(apiOperations);
+      await Promise.allSettled(apiOps);
 
       return { response_action: "clear" };
     },
@@ -1465,18 +1509,8 @@ export default SlackFunction(
   .addBlockActionsHandler(
     ["approve_step_btn", "reject_step_btn"],
     async ({ action, body, client }) => {
-      const stateContext = JSON.parse(action.value);
-      const isApprove = action.action_id === "approve_step_btn";
-      const decision = isApprove ? "APPROVE" : "REJECT";
-      const modalTitle = isApprove ? "Approve Quote" : "Reject Quote";
-      const headerText = isApprove
-        ? "Approve Quote #" + stateContext.quote_id
-        : "Reject Quote #" + stateContext.quote_id;
-      const submitText = isApprove ? "Approve" : "Reject";
-      const labelNote = isApprove
-        ? "Mandatory Approval Notes"
-        : "Mandatory Rejection Notes";
-
+      const stateContext = JSON.parse(action.value),
+        isApprove = action.action_id === "approve_step_btn";
       await client.views.open({
         interactivity_pointer: body.interactivity.interactivity_pointer,
         view: {
@@ -1485,39 +1519,34 @@ export default SlackFunction(
           private_metadata: JSON.stringify({
             quote_id: stateContext.quote_id,
             thread_ts: stateContext.thread_ts,
-            decision,
+            decision: isApprove ? "APPROVE" : "REJECT",
             dm_channel_id: body.container.channel_id,
             dm_message_ts: body.container.message_ts,
           }),
-          title: { type: "plain_text", text: modalTitle },
-          submit: { type: "plain_text", text: submitText },
+          title: { type: "plain_text", text: isApprove ? "Approve" : "Reject" },
+          submit: {
+            type: "plain_text",
+            text: isApprove ? "Approve" : "Reject",
+          },
           close: { type: "plain_text", text: "Cancel" },
-          blocks: [
-            { type: "header", text: { type: "plain_text", text: headerText } },
-            {
-              type: "section",
-              text: {
-                type: "mrkdwn",
-                text:
-                  "Please provide your reasoning. This audit trail will be logged natively into the channel thread.",
-              },
+          blocks: [{
+            type: "header",
+            text: {
+              type: "plain_text",
+              text: `${
+                isApprove ? "Approve" : "Reject"
+              } Quote #${stateContext.quote_id}`,
             },
-            {
-              type: "input",
-              block_id: "audit_note_block",
-              optional: false,
-              element: {
-                type: "plain_text_input",
-                action_id: "note_input",
-                multiline: true,
-                placeholder: {
-                  type: "plain_text",
-                  text: "Type your official audit notes here...",
-                },
-              },
-              label: { type: "plain_text", text: labelNote },
+          }, {
+            type: "input",
+            block_id: "audit_note_block",
+            element: {
+              type: "plain_text_input",
+              action_id: "note_input",
+              multiline: true,
             },
-          ],
+            label: { type: "plain_text", text: "Audit Notes" },
+          }],
         },
       });
       return { completed: false };
@@ -1526,181 +1555,115 @@ export default SlackFunction(
   .addViewSubmissionHandler(
     ["approval_decision_modal"],
     async ({ view, body, client }) => {
-      const meta = JSON.parse(view.private_metadata);
-      const { quote_id, thread_ts, decision, dm_channel_id, dm_message_ts } =
-        meta;
-      const auditNote = view.state.values.audit_note_block.note_input.value ||
-        "No note provided.";
-
+      const meta = JSON.parse(view.private_metadata),
+        auditNote = view.state.values.audit_note_block.note_input.value ||
+          "No note provided.";
       const quoteRes = await client.apps.datastore.get({
         datastore: QuotesDatastore.name,
-        id: quote_id,
+        id: meta.quote_id,
       });
       const quote = quoteRes.item;
       if (!quote) return { response_action: "clear" };
 
-      const targetThreadTs = thread_ts ?? quote.broadcast_thread_ts;
-      const targetChannelId = quote.broadcast_channel_id ?? dm_channel_id;
-
       const gauntlet: string[] = quote.approval_gauntlet
-        ? JSON.parse(quote.approval_gauntlet)
-        : [];
-      const curStep = quote.current_approval_step || 0;
+          ? JSON.parse(quote.approval_gauntlet)
+          : [],
+        curStep = quote.current_approval_step || 0;
       const auditTrail: any[] = quote.approval_audit_trail
         ? JSON.parse(quote.approval_audit_trail)
         : [];
-
       auditTrail.push({
         approver_id: body.user.id,
-        decision,
+        decision: meta.decision,
         note: auditNote,
         timestamp: Math.floor(Date.now() / 1000),
       });
       quote.approval_audit_trail = JSON.stringify(auditTrail);
 
-      const safeAuthorMention = quote.sales_rep_id
-        ? `<@${quote.sales_rep_id}>`
-        : "Quote Author";
+      const targetChan = quote.broadcast_channel_id ?? meta.dm_channel_id,
+        targetTs = meta.thread_ts ?? quote.broadcast_thread_ts;
 
-      if (decision === "REJECT") {
+      if (meta.decision === "REJECT") {
         quote.approval_status = "REJECTED";
-        quote.active_dm_channel = ""; // Wipe tracking collar so resumption fires fresh DM
+        quote.active_dm_channel = "";
         quote.active_dm_ts = "";
-
         await client.apps.datastore.put({
           datastore: QuotesDatastore.name,
           item: quote,
         });
-
-        const updatedCardP = buildLivingQuoteCard(
+        const card = await buildLivingQuoteCard(
           client,
-          quote_id,
+          meta.quote_id,
           quote.name,
           0,
           quote.sales_rep_id,
           false,
         );
-        const dmUpdateBlocks = [{
-          type: "header",
-          text: { type: "plain_text", text: "Quote #" + quote_id },
-        }, {
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text: '**You rejected this quote.**\n*Audit Note:* "' + auditNote +
-              '"',
-          },
-        }];
-        const threadMsg =
-          `:bell: ${safeAuthorMention}: Your quote was rejected at Step ` +
-          (curStep + 1) + ` of ` + gauntlet.length +
-          ` by <@${body.user.id}>.\n> "${auditNote}"`;
-
-        const updatedCard = await updatedCardP;
-
-        const ops = [
+        await Promise.all([
           client.chat.update({
-            channel: dm_channel_id,
-            ts: dm_message_ts,
-            text: "Quote #" + quote_id + " Rejected",
-            blocks: dmUpdateBlocks,
-          }),
-          client.chat.postMessage({
-            channel: targetChannelId,
-            thread_ts: targetThreadTs,
-            text: threadMsg,
-          }),
-          client.chat.update({
-            channel: targetChannelId,
-            ts: targetThreadTs,
-            blocks: updatedCard,
-            text: "Quote Rejected",
-          }),
-        ];
-
-        if (quote.sales_rep_id) {
-          ops.push(client.chat.postMessage({
-            channel: quote.sales_rep_id,
-            text: "Quote #" + quote_id + " Rejected by Deal Desk",
+            channel: meta.dm_channel_id,
+            ts: meta.dm_message_ts,
+            text: "Rejected",
             blocks: [{
-              type: "header",
-              text: {
-                type: "plain_text",
-                text: "QUOTE REJECTED: #" + quote_id,
-              },
-            }, {
               type: "section",
               text: {
                 type: "mrkdwn",
-                text: "<@" + body.user.id +
-                  "> rejected your quote ledger. Check the primary broadcast channel thread for full instructions.",
+                text: `**You rejected.** "${auditNote}"`,
               },
             }],
-          }));
-        }
-
-        await Promise.all(ops);
+          }),
+          client.chat.postMessage({
+            channel: targetChan,
+            thread_ts: targetTs,
+            text:
+              `:bell: <@${quote.sales_rep_id}>: Rejected by <@${body.user.id}>.\n> "${auditNote}"`,
+          }),
+          client.chat.update({
+            channel: targetChan,
+            ts: targetTs,
+            blocks: card,
+            text: "Rejected",
+          }),
+        ]);
       } else {
         const nextStep = curStep + 1;
-
-        const dmUpdateBlocks = [{
-          type: "header",
-          text: { type: "plain_text", text: "Quote #" + quote_id },
-        }, {
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text: "**You approved Step " + (curStep + 1) + " of " +
-              gauntlet.length + ".**",
-          },
-        }];
-        const threadMsg = `:bell: ${safeAuthorMention}: Step ` +
-          (curStep + 1) + ` of ` + gauntlet.length +
-          ` successfully approved by <@${body.user.id}>.\n> "${auditNote}"`;
-
         if (nextStep >= gauntlet.length) {
           quote.approval_status = "APPROVED";
           quote.current_approval_step = nextStep;
-          quote.active_dm_channel = ""; // Wipe tracking collar
+          quote.active_dm_channel = "";
           quote.active_dm_ts = "";
-
           await client.apps.datastore.put({
             datastore: QuotesDatastore.name,
             item: quote,
           });
-
-          const updatedCard = await buildLivingQuoteCard(
+          const card = await buildLivingQuoteCard(
             client,
-            quote_id,
+            meta.quote_id,
             quote.name,
             0,
             quote.sales_rep_id,
             false,
           );
-
           await Promise.all([
             client.chat.update({
-              channel: dm_channel_id,
-              ts: dm_message_ts,
-              text: "Quote #" + quote_id + " Approved",
-              blocks: dmUpdateBlocks,
+              channel: meta.dm_channel_id,
+              ts: meta.dm_message_ts,
+              text: "Approved",
+              blocks: [{
+                type: "section",
+                text: { type: "mrkdwn", text: "**Approved.**" },
+              }],
             }),
             client.chat.postMessage({
-              channel: targetChannelId,
-              thread_ts: targetThreadTs,
-              text: threadMsg,
-            }),
-            client.chat.postMessage({
-              channel: targetChannelId,
-              thread_ts: targetThreadTs,
-              text:
-                `[APPROVED] ${safeAuthorMention}: *Total Consensus Reached!* This quote has cleared all mandated Deal Desk review parameters.`,
+              channel: targetChan,
+              thread_ts: targetTs,
+              text: `[APPROVED] *Total Consensus Reached!* Cleared Deal Desk.`,
             }),
             client.chat.update({
-              channel: targetChannelId,
-              ts: targetThreadTs,
-              blocks: updatedCard,
-              text: "Quote Fully Approved",
+              channel: targetChan,
+              ts: targetTs,
+              blocks: card,
+              text: "Fully Approved",
             }),
           ]);
         } else {
@@ -1709,40 +1672,35 @@ export default SlackFunction(
             datastore: QuotesDatastore.name,
             item: quote,
           });
-
-          const updatedCard = await buildLivingQuoteCard(
+          const card = await buildLivingQuoteCard(
             client,
-            quote_id,
+            meta.quote_id,
             quote.name,
             0,
             quote.sales_rep_id,
             false,
           );
-
           await Promise.all([
             client.chat.update({
-              channel: dm_channel_id,
-              ts: dm_message_ts,
-              text: "Quote #" + quote_id + " Approved",
-              blocks: dmUpdateBlocks,
-            }),
-            client.chat.postMessage({
-              channel: targetChannelId,
-              thread_ts: targetThreadTs,
-              text: threadMsg,
+              channel: meta.dm_channel_id,
+              ts: meta.dm_message_ts,
+              text: "Approved",
+              blocks: [{
+                type: "section",
+                text: { type: "mrkdwn", text: "**Approved.**" },
+              }],
             }),
             client.chat.update({
-              channel: targetChannelId,
-              ts: targetThreadTs,
-              blocks: updatedCard,
-              text: "Awaiting next tier",
+              channel: targetChan,
+              ts: targetTs,
+              blocks: card,
+              text: "Tier 2",
             }),
-            // 🎯 Fires sign-off DM to next executive and snaps new tracking collar!
             dispatchFreshApprovalDM(
               client,
               quote,
               gauntlet[nextStep],
-              targetThreadTs,
+              targetTs,
             ),
           ]);
         }

@@ -4,7 +4,7 @@ import { TenantSettingsDatastore } from "../datastores/tenant_settings.ts";
 export const ManageSettingsFunctionDefinition = DefineFunction({
   callback_id: "manage_settings_function",
   title: "Manage App Settings",
-  description: "4-Tab enterprise dashboard for rich custom fields and advanced approval routing",
+  description: "Enterprise dashboard for rich custom fields and advanced approval routing",
   source_file: "functions/manage_settings.ts",
   input_parameters: {
     properties: { interactivity: { type: Schema.slack.types.interactivity } },
@@ -13,10 +13,10 @@ export const ManageSettingsFunctionDefinition = DefineFunction({
   output_parameters: { properties: {}, required: [] },
 });
 
-// 🎯 NEW HELPER: Auto-saves the active tab's UI state BEFORE we destroy the DOM to switch tabs
 async function autoSaveTabState(body: any, client: any) {
   const curId = body.view?.private_metadata || "v4_final_config";
-  if (curId !== "schema_quote" && curId !== "v4_final_config") return;
+  // 🎯 WIDENED GATE: Allow auto-saving channels for Accounts
+  if (curId !== "schema_quote" && curId !== "v4_final_config" && curId !== "schema_account") return;
   
   const stateVals = body.view?.state?.values;
   if (!stateVals) return;
@@ -24,7 +24,6 @@ async function autoSaveTabState(body: any, client: any) {
   const blockId = "broadcast_channels_block_" + curId;
   const actionObj = stateVals[blockId]?.["broadcast_channels_action"];
   
-  // If the block was actually on the screen, we completely trust the UI (even if they cleared it)
   if (actionObj) {
     const finalChannels = JSON.stringify(actionObj.selected_channels || []);
     const res = await client.apps.datastore.get({ datastore: TenantSettingsDatastore.name, id: curId });
@@ -40,7 +39,6 @@ async function autoSaveTabState(body: any, client: any) {
   }
 }
 
-// Helper: Safely extracts channels without executing a separate database call
 function getSafeChannelsFromState(stateVals: any, schemaId: string, fallbackDbString: any) {
   if (!stateVals) return fallbackDbString;
   const blockId = "broadcast_channels_block_" + schemaId;
@@ -54,6 +52,7 @@ function getSchemaSelector(activeTabId: string) {
   if (activeTabId === "schema_quote") title = "Quote";
   if (activeTabId === "schema_quote_product") title = "Quote Product";
   if (activeTabId === "advanced_approval_rules") title = "Quote Approvals";
+  if (activeTabId === "schema_account") title = "Account"; // 🎯 NEW SCHEMA
 
   return {
     type: "section",
@@ -65,6 +64,7 @@ function getSchemaSelector(activeTabId: string) {
       placeholder: { type: "plain_text", text: "Select portal..." },
       initial_option: { text: { type: "plain_text", text: title }, value: activeTabId },
       options: [
+        { text: { type: "plain_text", text: "Account" }, value: "schema_account" }, // 🎯 Added to top of list
         { text: { type: "plain_text", text: "Product" }, value: "v4_final_config" },
         { text: { type: "plain_text", text: "Quote" }, value: "schema_quote" },
         { text: { type: "plain_text", text: "Quote Product" }, value: "schema_quote_product" },
@@ -86,7 +86,8 @@ function getNavHeader(activeView: "add" | "manage") {
 }
 
 async function getBroadcastSection(client: any, schemaId: string) {
-  if (schemaId !== "schema_quote" && schemaId !== "v4_final_config") return [];
+  // 🎯 WIDENED GATE: Allow broadcast channels for Accounts
+  if (schemaId !== "schema_quote" && schemaId !== "v4_final_config" && schemaId !== "schema_account") return [];
   const res = await client.apps.datastore.get({ datastore: TenantSettingsDatastore.name, id: schemaId });
   let initialRooms: string[] = [];
   if (res.ok && res.item?.broadcast_channels) {
@@ -112,7 +113,7 @@ async function getAddCustomFieldBlocks(client: any, refreshId: number, schemaId:
     ...broadcastBlocks,
     { type: "header", text: { type: "plain_text", text: "Add a New Custom Field" } },
     { type: "input", block_id: "new_name_" + refreshId, optional: true, element: { type: "plain_text_input", action_id: "name_input", placeholder: { type: "plain_text", text: "e.g., Discount (%), Delivery Tier" } }, label: { type: "plain_text", text: "Field Label" } },
-    { type: "input", block_id: "new_type_" + refreshId, optional: true, element: { type: "static_select", action_id: "type_input", placeholder: { type: "plain_text", text: "Select data type" }, initial_option: { text: { type: "plain_text", text: "Short Text" }, value: "plain_text_input" }, options: [{ text: { type: "plain_text", text: "Short Text" }, value: "plain_text_input" }, { text: { type: "plain_text", text: "Paragraph (Multi-line)" }, value: "plain_text_input_multi" }, { text: { type: "plain_text", text: "Date Picker" }, value: "datepicker" }, { text: { type: "plain_text", text: "Time Picker" }, value: "timepicker" }, { text: { type: "plain_text", text: "User Select" }, value: "multi_users_select" }, { text: { type: "plain_text", text: "Dropdown (Select One)" }, value: "static_select" }, { text: { type: "plain_text", text: "Checkboxes (Select Multiple)" }, value: "multi_static_select" }] }, label: { type: "plain_text", text: "Data Type" } },
+    { type: "input", block_id: "new_type_" + refreshId, optional: true, element: { type: "static_select", action_id: "type_input", placeholder: { type: "plain_text", text: "Select data type" }, initial_option: { text: { type: "plain_text", text: "Short Text" }, value: "plain_text_input" }, options: [{ text: { type: "plain_text", text: "Short Text" }, value: "plain_text_input" }, { text: { type: "plain_text", text: "Paragraph (Multi-line)" }, value: "plain_text_input_multi" }, { text: { type: "plain_text", text: "Date Picker" }, value: "datepicker" }, { text: { type: "plain_text", text: "Time Picker" }, value: "timepicker" }, { text: { type: "plain_text", text: "User Select" }, value: "multi_users_select" }, { text: { type: "plain_text", text: "Dropdown (Select One)" }, value: "static_select" }, { text: { type: "plain_text", text: "Dropdown (Select Multiple)" }, value: "multi_static_select" }] }, label: { type: "plain_text", text: "Data Type" } },
     { type: "input", block_id: "new_options_" + refreshId, optional: true, element: { type: "plain_text_input", action_id: "options_input", placeholder: { type: "plain_text", text: "e.g., 10%, 20%, Custom" } }, label: { type: "plain_text", text: "Choices (For Dropdowns & Checkboxes)" } },
   ];
 
@@ -258,10 +259,7 @@ export default SlackFunction(
 )
   .addBlockActionsHandler(["select_schema_action"], async ({ action, body, client }) => {
     if (!body.view?.id) return { completed: false };
-    
-    // 🎯 INTERCEPTOR: Save the UI state of the CURRENT tab before destroying it
     await autoSaveTabState(body, client);
-
     const newId = action.selected_option.value;
     await client.views.update({
       view_id: body.view.id,
@@ -271,10 +269,7 @@ export default SlackFunction(
   })
   .addBlockActionsHandler(["go_to_add", "go_to_manage"], async ({ action, body, client }) => {
     if (!body.view?.id) return { completed: false };
-    
-    // 🎯 INTERCEPTOR: Save the UI state before switching sub-views
     await autoSaveTabState(body, client);
-
     const curId = body.view.private_metadata || "v4_final_config";
     const isAdd = action.action_id === "go_to_add";
     await client.views.update({
@@ -422,8 +417,26 @@ export default SlackFunction(
     return { completed: false };
   })
   .addBlockActionsHandler(["broadcast_channels_action", "f_val", "o_val", "quorum_val", "users_val"], async () => ({ completed: false }))
-  // 🎯 THE FINAL CATCH-ALL: Persists state exactly when the "Save" button is pushed
   .addViewSubmissionHandler(["settings_add_view", "settings_manage_view"], async ({ body, client }) => {
-    await autoSaveTabState(body, client);
+    // 🎯 WIDENED GATE: Extract dynamically isolated ID for Account saves too
+    const curId = body.view?.private_metadata || "v4_final_config";
+    if (curId === "schema_quote" || curId === "v4_final_config" || curId === "schema_account") {
+      const stateVals = body.view?.state?.values;
+      const blockId = "broadcast_channels_block_" + curId; 
+      const selectedChannels = stateVals?.[blockId]?.["broadcast_channels_action"]?.selected_channels;
+      
+      if (selectedChannels) {
+        const res = await client.apps.datastore.get({ datastore: TenantSettingsDatastore.name, id: curId });
+        await client.apps.datastore.put({
+          datastore: TenantSettingsDatastore.name,
+          item: {
+            id: curId,
+            custom_fields: res.item?.custom_fields || [],
+            broadcast_channels: JSON.stringify(selectedChannels),
+            approval_rules: res.item?.approval_rules,
+          },
+        });
+      }
+    }
     return { response_action: "clear" };
   });
