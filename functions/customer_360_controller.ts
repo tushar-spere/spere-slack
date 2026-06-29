@@ -33,8 +33,11 @@ function calculateQuoteTotal(lineItemsJson: string): number {
   }
 }
 
-function formatEnterpriseCurrency(n: number): string {
-  return (n || 0).toLocaleString("en-US", {
+// 🎯 STRICT BUILDER MATCH: Drops .00 on whole integers ($11), keeps cents ($11.50)
+function formatBuilderPrice(n: number): string {
+  const val = n || 0;
+  if (val % 1 === 0) return val.toLocaleString("en-US");
+  return val.toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
@@ -70,64 +73,79 @@ function getQuoteStatusBadge(q: any): string {
   return "Pending Review";
 }
 
-function drawMicroscopeTable(lineItemsJson: string, prodSchema: any[]) {
-  const tick3 = String.fromCharCode(96, 96, 96);
+// 🎯 100% PIXEL-CLONED TYPESETTER
+function drawMicroscopeBlocks(lineItemsJson: string): any[] {
   let items: any[] = [];
   try {
     items = JSON.parse(lineItemsJson || "[]");
   } catch (e) { /**/ }
 
   if (items.length === 0) {
-    return tick3 + "\nNo itemized inventory attached.\n" + tick3;
+    return [{
+      type: "section",
+      text: { type: "mrkdwn", text: "No itemized inventory attached." },
+    }];
   }
 
-  const headers = (prodSchema || []).filter((f: any) =>
-    f.show_on_table !== false
-  ).map((f: any) => String(f.name || "Spec").toUpperCase());
-  const wProd = 16, wQty = 5, wPrice = 10, wCustom = 12, wSub = 11;
-  const divider =
-    "-".repeat(wProd + wQty + wPrice + (headers.length * wCustom) + wSub) +
-    "\n";
+  const resBlocks: any[] = [];
+  let grandQty = 0;
+  let grandTot = 0;
 
-  let str = tick3 + "\n" + String("PRODUCT").padEnd(wProd) +
-    String("QTY").padStart(wQty) + String("PRICE").padStart(wPrice);
-  headers.forEach((h: string) =>
-    str += ("  " + h.substring(0, wCustom - 2)).padEnd(wCustom)
-  );
-  str += String("SUBTOTAL").padStart(wSub) + "\n" + divider;
+  items.forEach((item: any, idx: number) => {
+    const q = parseInt(item.qty, 10) || 1;
+    const p = parseFloat(item.unitPrice) || 0;
+    const sub = q * p;
+    grandQty += q;
+    grandTot += sub;
 
-  let sQty = 0, sTot = 0;
-  items.forEach((i: any) => {
-    const q = parseInt(i.qty, 10) || 1,
-      p = parseFloat(i.unitPrice) || 0,
-      sub = q * p;
-    sQty += q;
-    sTot += sub;
-    let rStr =
-      String(i.productName || "Item").substring(0, wProd - 2).padEnd(wProd) +
-      String(q).padStart(wQty) +
-      ("$" + formatEnterpriseCurrency(p)).padStart(wPrice);
-    headers.forEach((h: string) => {
-      const mKey = Object.keys(i.customSpecs || {}).find((k) =>
-        k.toUpperCase() === h
-      );
-      const val = mKey ? i.customSpecs[mKey] : "-";
-      rStr +=
-        ("  " +
-          (val !== undefined && val !== null && val !== "" ? String(val) : "-")
-            .substring(0, wCustom - 2)).padEnd(wCustom);
+    const pStr = formatBuilderPrice(p);
+    const subStr = formatBuilderPrice(sub);
+
+    // Line 1: Exact hyphen and spacing syntax
+    let rowStr = `*${idx + 1}. ${item.productName || "Item"}* | Qty: ${
+      q.toLocaleString("en-US")
+    } (@ $${pStr}) - *$${subStr}*`;
+
+    // Line 2: Exact L-arrow anchor, bolded labels, and pipe delimiters
+    const specs: string[] = [];
+    if (item.customSpecs && typeof item.customSpecs === "object") {
+      for (const [k, v] of Object.entries(item.customSpecs)) {
+        if (v !== undefined && v !== null && String(v).trim() !== "") {
+          specs.push(`*${k}:* ${v}`);
+        }
+      }
+    }
+
+    if (specs.length > 0) {
+      rowStr += `\n↳ ${specs.join(" | ")}`;
+    }
+
+    resBlocks.push({
+      type: "section",
+      text: { type: "mrkdwn", text: rowStr },
     });
-    str += rStr + ("$" + formatEnterpriseCurrency(sub)).padStart(wSub) + "\n";
   });
 
-  str += divider + String("TOTALS").padEnd(wProd) +
-    String(sQty).padStart(wQty) + "".padEnd(wPrice);
-  headers.forEach(() => str += "".padEnd(wCustom));
-  return str + ("$" + formatEnterpriseCurrency(sTot)).padStart(wSub) + "\n" +
-    tick3;
+  resBlocks.push(
+    { type: "divider" },
+    {
+      type: "section",
+      fields: [
+        {
+          type: "mrkdwn",
+          text: `*Total Units:*\n${grandQty.toLocaleString("en-US")}`,
+        },
+        {
+          type: "mrkdwn",
+          text: `*Total Value:*\n*$${formatBuilderPrice(grandTot)}*`,
+        },
+      ],
+    },
+  );
+
+  return resBlocks;
 }
 
-// TIER 1: THE LOBBY
 async function buildTierOneLobby(client: any) {
   const accRes = await client.apps.datastore.query({
     datastore: AccountsDatastore.name,
@@ -140,7 +158,7 @@ async function buildTierOneLobby(client: any) {
     blocks.push({
       type: "section",
       text: { type: "mrkdwn", text: "No accounts exist in the database." },
-    }); // 🎯 Stripped italics
+    });
   } else {
     const opts = accounts.slice(0, 100).map((a: any) => ({
       text: { type: "plain_text", text: String(a.name).substring(0, 75) },
@@ -167,9 +185,8 @@ async function buildTierOneLobby(client: any) {
   };
 }
 
-// TIER 2: THE BOARDROOM DOSSIER
 async function buildTierTwoBoardroom(client: any, accountId: string) {
-  const [accRes, quotesRes, accSchemaRes] = await Promise.all([
+  const [accRes, quotesRes, accSchemaRes, allAccountsRes] = await Promise.all([
     client.apps.datastore.get({
       datastore: AccountsDatastore.name,
       id: accountId,
@@ -179,6 +196,7 @@ async function buildTierTwoBoardroom(client: any, accountId: string) {
       datastore: TenantSettingsDatastore.name,
       id: "schema_account",
     }),
+    client.apps.datastore.query({ datastore: AccountsDatastore.name }),
   ]);
 
   const account = accRes.item || { name: "Unknown Account", metadata: "{}" };
@@ -195,7 +213,26 @@ async function buildTierTwoBoardroom(client: any, accountId: string) {
     0,
   );
 
+  const allAccounts = allAccountsRes.items || [];
+  const switcherOptions = allAccounts.slice(0, 100).map((a: any) => ({
+    text: { type: "plain_text", text: String(a.name).substring(0, 75) },
+    value: String(a.id),
+  }));
+  const activeOption = switcherOptions.find((o: any) => o.value === accountId);
+
   const blocks: any[] = [
+    {
+      type: "section",
+      text: { type: "mrkdwn", text: "*🔀 Switch Account*" },
+      accessory: {
+        type: "static_select",
+        action_id: "select_account_action",
+        placeholder: { type: "plain_text", text: "Jump to account..." },
+        options: switcherOptions,
+        ...(activeOption ? { initial_option: activeOption } : {}),
+      },
+    },
+    { type: "divider" },
     {
       type: "header",
       text: {
@@ -210,7 +247,7 @@ async function buildTierTwoBoardroom(client: any, accountId: string) {
         {
           type: "mrkdwn",
           text: `*Lifetime Quoted Volume:*\n$${
-            formatEnterpriseCurrency(totalPipeline)
+            formatBuilderPrice(totalPipeline)
           } across ${clientQuotes.length} record(s)`,
         },
       ],
@@ -234,10 +271,7 @@ async function buildTierTwoBoardroom(client: any, accountId: string) {
     });
 
     for (let i = 0; i < fieldObjects.length; i += 10) {
-      blocks.push({
-        type: "section",
-        fields: fieldObjects.slice(i, i + 10),
-      });
+      blocks.push({ type: "section", fields: fieldObjects.slice(i, i + 10) });
     }
   }
 
@@ -250,9 +284,8 @@ async function buildTierTwoBoardroom(client: any, accountId: string) {
     blocks.push({
       type: "section",
       text: { type: "mrkdwn", text: "No quotes attached to this account." },
-    }); // 🎯 Stripped italics
+    });
   } else {
-    // 🎯 SERIAL INDEX INJECTED INTO LOOP
     clientQuotes.forEach((q: any, idx: number) => {
       const qTot = calculateQuoteTotal(q.line_items);
       const cleanStatus = getQuoteStatusBadge(q);
@@ -268,11 +301,7 @@ async function buildTierTwoBoardroom(client: any, accountId: string) {
         else modTs = bornTs;
       } catch (e) { /**/ }
 
-      const createdStr = formatEnterpriseDate(bornTs);
-      const modifiedStr = formatEnterpriseDate(modTs);
-
       blocks.push(
-        // 🎯 UPRIGHT PLAIN TEXT ID + BOLD SERIAL ANCHOR
         {
           type: "section",
           text: {
@@ -292,10 +321,16 @@ async function buildTierTwoBoardroom(client: any, accountId: string) {
             { type: "mrkdwn", text: `*Status:*\n${cleanStatus}` },
             {
               type: "mrkdwn",
-              text: `*Total Value:*\n$${formatEnterpriseCurrency(qTot)}`,
+              text: `*Total Value:*\n$${formatBuilderPrice(qTot)}`,
             },
-            { type: "mrkdwn", text: `*Create Date:*\n${createdStr}` },
-            { type: "mrkdwn", text: `*Last Modified:*\n${modifiedStr}` },
+            {
+              type: "mrkdwn",
+              text: `*Create Date:*\n${formatEnterpriseDate(bornTs)}`,
+            },
+            {
+              type: "mrkdwn",
+              text: `*Last Modified:*\n${formatEnterpriseDate(modTs)}`,
+            },
           ],
         },
         { type: "divider" },
@@ -312,22 +347,14 @@ async function buildTierTwoBoardroom(client: any, accountId: string) {
   };
 }
 
-// TIER 3: THE MICROSCOPE
 async function buildTierThreeMicroscope(client: any, quoteId: string) {
-  const [qRes, qSchemaRes, pSchemaRes] = await Promise.all([
-    client.apps.datastore.get({ datastore: QuotesDatastore.name, id: quoteId }),
-    client.apps.datastore.get({
-      datastore: TenantSettingsDatastore.name,
-      id: "schema_quote",
-    }),
-    client.apps.datastore.get({
-      datastore: TenantSettingsDatastore.name,
-      id: "schema_quote_product",
-    }),
-  ]);
-
+  const qRes = await client.apps.datastore.get({
+    datastore: QuotesDatastore.name,
+    id: quoteId,
+  });
   const quote = qRes.item ||
     { name: "Unknown Deal", metadata: "{}", line_items: "[]" };
+
   let meta: Record<string, any> = {};
   try {
     meta = JSON.parse(quote.metadata || "{}");
@@ -336,43 +363,54 @@ async function buildTierThreeMicroscope(client: any, quoteId: string) {
   const bornTs = meta._sys_created_at || Math.floor(Date.now() / 1000);
   const modTs = meta._sys_updated_at || bornTs;
   const dealTot = calculateQuoteTotal(quote.line_items);
+  const parentAccId = quote.description;
 
-  const blocks: any[] = [
+  const blocks: any[] = [];
+
+  if (parentAccId) {
+    blocks.push(
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: { type: "plain_text", text: "⬅️ Back", emoji: true },
+            action_id: "pop_to_account_action",
+            value: parentAccId,
+          },
+        ],
+      },
+      { type: "divider" },
+    );
+  }
+
+  blocks.push(
     {
       type: "header",
-      text: { type: "plain_text", text: `Quote Readout: #${quoteId}` },
+      text: { type: "plain_text", text: `Quote Information: #${quoteId}` },
     },
     {
       type: "section",
       fields: [
-        { type: "mrkdwn", text: `*Record Title:*\n${quote.name}` },
+        { type: "mrkdwn", text: `*Name:*\n${quote.name}` },
         {
           type: "mrkdwn",
-          text: `*Valuation:*\n*$${formatEnterpriseCurrency(dealTot)}*`,
+          text: `*Total Value:*\n*$${formatBuilderPrice(dealTot)}*`,
         },
         {
           type: "mrkdwn",
-          text: `*Create Date:*\n<!date^${bornTs}^{date_num}|Date>`,
+          text: `*Create Date:*\n${formatEnterpriseDate(bornTs)}`,
         },
         {
           type: "mrkdwn",
-          text: `*Last Modified:*\n<!date^${modTs}^{date_num}|Date>`,
+          text: `*Last Modified:*\n${formatEnterpriseDate(modTs)}`,
         },
       ],
     },
     { type: "divider" },
-    { type: "section", text: { type: "mrkdwn", text: "*Bill of Materials:*" } },
-    {
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: drawMicroscopeTable(
-          quote.line_items,
-          pSchemaRes.item?.custom_fields,
-        ),
-      },
-    },
-  ];
+    { type: "header", text: { type: "plain_text", text: "Bill of Materials" } },
+    ...drawMicroscopeBlocks(quote.line_items),
+  );
 
   let trail: any[] = [];
   try {
@@ -391,9 +429,11 @@ async function buildTierThreeMicroscope(client: any, quoteId: string) {
           type: "mrkdwn",
           text: `${
             i + 1
-          }. *<@${t.approver_id}>* [${t.decision}]: "${t.note}" \n<!date^${t.timestamp}^{date_short_pretty} at {time}|Date>`,
+          }. *<@${t.approver_id}>* [${t.decision}]: "${t.note}"\n${
+            formatEnterpriseDate(t.timestamp)
+          }`,
         },
-      }); // 🎯 Stripped italics
+      });
     });
   }
 
@@ -401,6 +441,7 @@ async function buildTierThreeMicroscope(client: any, quoteId: string) {
     type: "modal",
     callback_id: "c360_tier_three",
     title: { type: "plain_text", text: `Quote #${quoteId}` },
+    close: { type: "plain_text", text: "Close" },
     blocks,
   };
 }
@@ -430,9 +471,21 @@ export default SlackFunction(
     ["push_microscope_action"],
     async ({ action, body, client }) => {
       const targetQuoteId = action.value;
-      await client.views.push({
-        interactivity_pointer: body.interactivity.interactivity_pointer,
+      await client.views.update({
+        view_id: body.view?.id,
         view: await buildTierThreeMicroscope(client, targetQuoteId),
+      });
+      return { completed: false };
+    },
+  )
+  .addBlockActionsHandler(
+    ["pop_to_account_action"],
+    async ({ action, body, client }) => {
+      const targetAccountId = action.value;
+      if (!targetAccountId) return { completed: false };
+      await client.views.update({
+        view_id: body.view?.id,
+        view: await buildTierTwoBoardroom(client, targetAccountId),
       });
       return { completed: false };
     },
