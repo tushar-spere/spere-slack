@@ -4,7 +4,7 @@ import { CreateQuoteWorkflow } from "../workflows/create_quote_workflow.ts";
 
 const createQuoteTrigger: Trigger<typeof CreateQuoteWorkflow.definition> = {
   type: TriggerTypes.Shortcut,
-  name: "New Quote",
+  name: "Quote",
   description: "Generate a new custom quote",
   workflow: "#/workflows/create_quote_workflow",
   inputs: {
