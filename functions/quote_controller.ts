@@ -274,7 +274,7 @@ async function buildStepTwoView(
     callback_id: "quote_step_two_modal",
     private_metadata: quoteId,
     title: { type: "plain_text", text: "Quote Line Items" },
-    submit: { type: "plain_text", text: "Finalize Quote" },
+    submit: { type: "plain_text", text: "Save" },
     blocks,
   };
 }
@@ -502,8 +502,9 @@ export default SlackFunction(
           selProd = (aObj as any).catalog_select?.selected_option?.value ||
             "none";
         }
-        if (bId.startsWith("qty_input_block_")) {qty =
-            (aObj as any).qty_val?.value || "1";}
+        if (bId.startsWith("qty_input_block_")) {
+          qty = (aObj as any).qty_val?.value || "1";
+        }
         if (bId.startsWith("unit_price_input_block_")) {
           price = (aObj as any).price_val?.value || "0";
         }

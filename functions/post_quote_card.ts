@@ -3,6 +3,13 @@ import { QuotesDatastore } from "../datastores/quotes.ts";
 import { ProductsDatastore } from "../datastores/products.ts";
 import { TenantSettingsDatastore } from "../datastores/tenant_settings.ts";
 import { AccountsDatastore } from "../datastores/accounts.ts";
+import {
+  buildApprovalDMBlocks,
+  dispatchFreshApprovalDM,
+  evaluateCondition,
+  getAccountDisplayName,
+  processApprovalSubmission,
+} from "./approval_controller.ts";
 
 export const PostQuoteCardFunction = DefineFunction({
   callback_id: "post_quote_card",
@@ -25,68 +32,11 @@ export const PostQuoteCardFunction = DefineFunction({
   },
 });
 
-function testOperator(
-  actualVal: any,
-  operator: string,
-  targetVal: string,
-): boolean {
-  if (actualVal === undefined || actualVal === null) return false;
-  const aStr = String(actualVal).trim(), tStr = String(targetVal).trim();
-  const aNum = parseFloat(actualVal) || 0, tNum = parseFloat(targetVal) || 0;
-  switch (operator) {
-    case "EQ":
-      return aStr.toLowerCase() === tStr.toLowerCase();
-    case "CONTAINS":
-      return aStr.toLowerCase().includes(tStr.toLowerCase());
-    case "CONTAINS_EXACT":
-      return aStr.includes(tStr);
-    case "GT":
-      return aNum > tNum;
-    case "LT":
-      return aNum < tNum;
-    default:
-      return false;
-  }
-}
+// ==========================================
+// 1. PUBLIC CARD & TABLE FORMATTERS
+// ==========================================
 
-function evaluateCondition(
-  cond: any,
-  quoteObj: any,
-  lineItemsArr: any[],
-  metaBlob: Record<string, any>,
-  prodSchema: any[],
-): boolean {
-  const { field_ref, operator, target_val } = cond;
-  if (field_ref === "quote.total_amount") {
-    let calc = 0;
-    lineItemsArr.forEach((i: any) =>
-      calc += (parseInt(i.qty, 10) || 1) * (parseFloat(i.unitPrice) || 0)
-    );
-    return testOperator(calc, operator, target_val);
-  }
-  if (field_ref === "quote.customer_name") {
-    return testOperator(quoteObj.description, operator, target_val) ||
-      testOperator(quoteObj.name, operator, target_val);
-  }
-  if (field_ref.startsWith("quote.custom_field_")) {
-    return testOperator(
-      metaBlob[field_ref.replace("quote.", "")],
-      operator,
-      target_val,
-    );
-  }
-  if (field_ref.startsWith("product.item_custom_")) {
-    const targetSpecLabel = prodSchema[parseInt(field_ref.split("_")[2], 10)]
-      ?.name;
-    if (!targetSpecLabel) return false;
-    return lineItemsArr.some((item: any) =>
-      testOperator(item.customSpecs?.[targetSpecLabel], operator, target_val)
-    );
-  }
-  return false;
-}
-
-function formatInCardTable(items: any[], customFieldsSchema: any[]) {
+export function formatInCardTable(items: any[], customFieldsSchema: any[]) {
   const tick3 = String.fromCharCode(96, 96, 96);
   if (!items || items.length === 0) {
     return tick3 + "\nNo inventory items attached.\n" + tick3;
@@ -122,10 +72,9 @@ function formatInCardTable(items: any[], customFieldsSchema: any[]) {
         k.toUpperCase() === h
       );
       const val = mKey ? i.customSpecs[mKey] : "-";
-      rStr +=
-        ("  " +
-          (val !== undefined && val !== null && val !== "" ? String(val) : "-")
-            .substring(0, wCustom - 2)).padEnd(wCustom);
+      rStr += ("  " +
+        (val !== undefined && val !== null && val !== "" ? String(val) : "-")
+          .substring(0, wCustom - 2)).padEnd(wCustom);
     });
     str += rStr + ("$" + sub.toLocaleString()).padStart(wSub) + "\n";
   });
@@ -389,8 +338,7 @@ async function buildEditStepTwoView(
   };
 }
 
-// 🎯 UPGRADED LIVING CARD: 6-Cell Balanced Grid
-async function buildLivingQuoteCard(
+export async function buildLivingQuoteCard(
   client: any,
   quoteId: string,
   fallbackName: string,
@@ -415,16 +363,10 @@ async function buildLivingQuoteCard(
   const metaBlob = quote?.metadata ? JSON.parse(quote.metadata) : {};
   const itemsArr = quote?.line_items ? JSON.parse(quote.line_items) : [];
 
-  // Fetch linked Account Name
-  const accId = quote?.description;
-  let accountDisplay = "Unassigned";
-  if (accId && accId !== "NO_ACCOUNT") {
-    const accRes = await client.apps.datastore.get({
-      datastore: AccountsDatastore.name,
-      id: accId,
-    });
-    accountDisplay = accRes.item?.name ? `${accRes.item.name}` : accId;
-  }
+  const accountDisplay = await getAccountDisplayName(
+    client,
+    quote?.description,
+  );
 
   let calcTot = 0;
   itemsArr.forEach((i: any) =>
@@ -450,12 +392,10 @@ async function buildLivingQuoteCard(
     ? `<@${repId}>`
     : "Author unrecorded";
 
-  // 🎯 TIMESTAMPS: Safely extracts born vs updated timestamps
   const nowTs = Math.floor(Date.now() / 1000);
   const createdTs = metaBlob._sys_created_at || nowTs;
   const updatedTs = metaBlob._sys_updated_at || createdTs;
 
-  // 🎯 THE 6-CELL BALANCED GRID
   const coreGrid = [
     { type: "mrkdwn", text: "*Account:*\n" + accountDisplay },
     { type: "mrkdwn", text: "*Total Value:*\n" + formattedTotalDisplay },
@@ -539,220 +479,9 @@ async function buildLivingQuoteCard(
   return blocks;
 }
 
-// 🎯 UPGRADED APPROVAL DM: 6-Cell Balanced Grid
-async function buildApprovalDMBlocks(
-  client: any,
-  quoteId: string,
-  threadTs: string,
-  isExpanded: boolean,
-) {
-  const [quoteRes, qSchemaRes, pSchemaRes] = await Promise.all([
-    client.apps.datastore.get({ datastore: QuotesDatastore.name, id: quoteId }),
-    client.apps.datastore.get({
-      datastore: TenantSettingsDatastore.name,
-      id: "schema_quote",
-    }),
-    client.apps.datastore.get({
-      datastore: TenantSettingsDatastore.name,
-      id: "schema_quote_product",
-    }),
-  ]);
-
-  const quote = quoteRes.item;
-  if (!quote) return null;
-
-  const metaBlob = quote.metadata ? JSON.parse(quote.metadata) : {};
-  const itemsArr = quote.line_items ? JSON.parse(quote.line_items) : [];
-  const auditTrail = quote.approval_audit_trail
-    ? JSON.parse(quote.approval_audit_trail)
-    : [];
-
-  const accId = quote.description;
-  let accountDisplay = "Unassigned";
-  if (accId && accId !== "NO_ACCOUNT") {
-    const accRes = await client.apps.datastore.get({
-      datastore: AccountsDatastore.name,
-      id: accId,
-    });
-    accountDisplay = accRes.item?.name ? `${accRes.item.name}` : accId;
-  }
-
-  let calcTot = 0;
-  itemsArr.forEach((i: any) =>
-    calcTot += (parseInt(i.qty, 10) || 1) * (parseFloat(i.unitPrice) || 0)
-  );
-
-  const safeAuthorDisplay = quote.sales_rep_id
-    ? `<@${quote.sales_rep_id}>`
-    : "Author unrecorded";
-
-  const nowTs = Math.floor(Date.now() / 1000);
-  const createdTs = metaBlob._sys_created_at || nowTs;
-  const updatedTs = metaBlob._sys_updated_at || createdTs;
-
-  const coreGrid = [
-    { type: "mrkdwn", text: "*Account:*\n" + accountDisplay },
-    { type: "mrkdwn", text: "*Total Value:*\n$" + calcTot.toLocaleString() },
-    { type: "mrkdwn", text: "*Status:*\nMandated Executive Review" },
-    { type: "mrkdwn", text: "*Prepared By:*\n" + safeAuthorDisplay },
-    {
-      type: "mrkdwn",
-      text: "*Create Date:*\n<!date^" + createdTs + "^{date_num}|Date>",
-    },
-    {
-      type: "mrkdwn",
-      text: "*Last Modified:*\n<!date^" + updatedTs + "^{date_num}|Date>",
-    },
-  ];
-
-  const blocks: any[] = [
-    {
-      type: "header",
-      text: {
-        type: "plain_text",
-        text: "APPROVAL REQUIRED: #" + quoteId + " - " + quote.name,
-      },
-    },
-    { type: "divider" },
-    { type: "section", fields: coreGrid },
-  ];
-
-  const cKeys = Object.keys(metaBlob).filter((k) =>
-    k.startsWith("custom_field_")
-  );
-  if (cKeys.length > 0) {
-    blocks.push({ type: "divider" }, {
-      type: "section",
-      text: { type: "mrkdwn", text: "*Macro Specifications:*" },
-    });
-    cKeys.forEach((k) => {
-      blocks.push({
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: "*" +
-            (qSchemaRes.item?.custom_fields
-              ?.[parseInt(k.replace("custom_field_", ""), 10)]?.name ||
-              "Spec") +
-            ":* " + metaBlob[k],
-        },
-      });
-    });
-  }
-
-  if (isExpanded && itemsArr.length > 0) {
-    blocks.push({ type: "divider" }, {
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: "*Itemized Inventory Breakdown (" + itemsArr.length + ")*\n" +
-          formatInCardTable(itemsArr, pSchemaRes.item?.custom_fields),
-      },
-    });
-  }
-
-  const humanDecisionsOnly = auditTrail.filter((entry: any) =>
-    entry.decision === "APPROVE" || entry.decision === "REJECT"
-  );
-  if (humanDecisionsOnly.length > 0) {
-    blocks.push({ type: "divider" }, {
-      type: "section",
-      text: { type: "mrkdwn", text: "*Prior Audit Trail:*" },
-    });
-    humanDecisionsOnly.forEach((entry: any, idx: number) => {
-      blocks.push({
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: `${idx + 1}. *<@${entry.approver_id}>:* "${entry.note}"`,
-        },
-      });
-    });
-  }
-
-  const gauntlet = quote.approval_gauntlet
-    ? JSON.parse(quote.approval_gauntlet)
-    : [];
-  const packedState = JSON.stringify({
-    quote_id: quoteId,
-    thread_ts: threadTs,
-  });
-
-  blocks.push(
-    { type: "divider" },
-    {
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: "*Execution Relay:* You are Step " +
-          ((quote.current_approval_step || 0) + 1) + " of " + gauntlet.length +
-          " in the mandated deal desk sign-off chain.",
-      },
-    },
-  );
-
-  const dmActions: any[] = [];
-  if (itemsArr.length > 0) {
-    dmActions.push({
-      type: "button",
-      text: {
-        type: "plain_text",
-        text: isExpanded ? "Collapse Table" : "View Details",
-      },
-      action_id: isExpanded ? "dm_collapse_ledger" : "dm_expand_ledger",
-      value: packedState,
-    });
-  }
-  dmActions.push(
-    {
-      type: "button",
-      text: { type: "plain_text", text: "Approve" },
-      style: "primary",
-      action_id: "approve_step_btn",
-      value: packedState,
-    },
-    {
-      type: "button",
-      text: { type: "plain_text", text: "Reject" },
-      style: "danger",
-      action_id: "reject_step_btn",
-      value: packedState,
-    },
-  );
-
-  blocks.push({ type: "actions", elements: dmActions });
-  return blocks;
-}
-
-async function dispatchFreshApprovalDM(
-  client: any,
-  quoteObj: any,
-  targetApproverId: string,
-  threadTs: string,
-) {
-  const blocks = await buildApprovalDMBlocks(
-    client,
-    quoteObj.id,
-    threadTs,
-    false,
-  );
-  if (!blocks) return null;
-
-  const postRes = await client.chat.postMessage({
-    channel: targetApproverId,
-    blocks,
-    text: "Approval requested for #" + quoteObj.id,
-  });
-  if (postRes.ok) {
-    quoteObj.active_dm_channel = postRes.channel;
-    quoteObj.active_dm_ts = postRes.ts;
-    await client.apps.datastore.put({
-      datastore: QuotesDatastore.name,
-      item: quoteObj,
-    });
-  }
-  return postRes;
-}
+// ==========================================
+// 2. MAIN FUNCTION WORKER
+// ==========================================
 
 export default SlackFunction(
   PostQuoteCardFunction,
@@ -789,10 +518,10 @@ export default SlackFunction(
       rawRulesArray.forEach((rule: any) => {
         const conditionsArray: any[] = rule.conditions || [];
         const isTriggered = (rule.match_type === "AND")
-          ? conditionsArray.every((c) =>
+          ? conditionsArray.every((c: any) =>
             evaluateCondition(c, quote, itemsArr, metaBlob, pSchema)
           )
-          : conditionsArray.some((c) =>
+          : conditionsArray.some((c: any) =>
             evaluateCondition(c, quote, itemsArr, metaBlob, pSchema)
           );
         if (isTriggered) {
@@ -819,6 +548,11 @@ export default SlackFunction(
         quote.current_approval_step = 0;
         quote.approval_audit_trail = "[]";
       }
+
+      await client.apps.datastore.put({
+        datastore: QuotesDatastore.name,
+        item: quote,
+      });
 
       const settingsRes = await client.apps.datastore.get({
         datastore: TenantSettingsDatastore.name,
@@ -928,6 +662,9 @@ export default SlackFunction(
     return { completed: false };
   },
 )
+  // ==========================================
+  // 3. PUBLIC TABLE & EDIT INTERACTIVITY
+  // ==========================================
   .addBlockActionsHandler(
     ["expand_ledger_action"],
     async ({ action, body, client }) => {
@@ -959,42 +696,6 @@ export default SlackFunction(
           "Customer",
           0,
           body.user.id,
-          false,
-        ),
-        text: "Collapsed",
-      });
-      return { completed: false };
-    },
-  )
-  .addBlockActionsHandler(
-    ["dm_expand_ledger"],
-    async ({ action, body, client }) => {
-      const state = JSON.parse(action.value);
-      await client.chat.update({
-        channel: body.container.channel_id,
-        ts: body.container.message_ts,
-        blocks: await buildApprovalDMBlocks(
-          client,
-          state.quote_id,
-          state.thread_ts,
-          true,
-        ),
-        text: "Expanded",
-      });
-      return { completed: false };
-    },
-  )
-  .addBlockActionsHandler(
-    ["dm_collapse_ledger"],
-    async ({ action, body, client }) => {
-      const state = JSON.parse(action.value);
-      await client.chat.update({
-        channel: body.container.channel_id,
-        ts: body.container.message_ts,
-        blocks: await buildApprovalDMBlocks(
-          client,
-          state.quote_id,
-          state.thread_ts,
           false,
         ),
         text: "Collapsed",
@@ -1169,7 +870,6 @@ export default SlackFunction(
           ? JSON.parse(qRes.item.metadata)
           : {};
 
-        // 🎯 STAMP UPDATE DATE ON METADATA EDIT
         const mergedMeta = {
           ...oldMeta,
           ...newBlob,
@@ -1210,7 +910,6 @@ export default SlackFunction(
         items.splice(p.index, 1);
         qRes.item.line_items = JSON.stringify(items);
 
-        // 🎯 STAMP UPDATE DATE ON ITEM REMOVAL
         const metaBlob = qRes.item.metadata
           ? JSON.parse(qRes.item.metadata)
           : {};
@@ -1255,8 +954,9 @@ export default SlackFunction(
           selProd = (aObj as any).catalog_select?.selected_option?.value ||
             "none";
         }
-        if (bId.startsWith("qty_input_")) {qty = (aObj as any).qty_val?.value ||
-            "1";}
+        if (bId.startsWith("qty_input_")) {
+          qty = (aObj as any).qty_val?.value || "1";
+        }
         if (bId.startsWith("price_input_")) {
           price = (aObj as any).price_val?.value || "0";
         }
@@ -1333,7 +1033,15 @@ export default SlackFunction(
         items: quote.line_items || "[]",
       });
       const isMutated = meta.pristine_hash !== activePayload;
-      let statusNote = "Ledger modifications committed.";
+
+      const accountDisplay = await getAccountDisplayName(
+        client,
+        quote.description,
+      );
+
+      // 🎯 Flavor A (Middle Dot): Standard Edit
+      let editThreadText =
+        `<@${rep}> updated Quote #${meta.quote_id} • ${accountDisplay}`;
 
       if (isMutated) {
         const [pSchemaRes, rulesRes] = await Promise.all([
@@ -1353,7 +1061,6 @@ export default SlackFunction(
 
         const metaBlob = quote.metadata ? JSON.parse(quote.metadata) : {};
 
-        // 🎯 STAMP UPDATE DATE UPON INVENTORY CHANGE SAVE
         metaBlob._sys_updated_at = Math.floor(Date.now() / 1000);
         quote.metadata = JSON.stringify(metaBlob);
 
@@ -1387,7 +1094,11 @@ export default SlackFunction(
           quote.current_approval_step = 0;
           quote.active_dm_channel = "";
           quote.active_dm_ts = "";
-          statusNote = "*Consensus Re-Calculated:* Deal within parameters.";
+
+          // 🎯 Flavor A (Middle Dot): Auto Approval
+          editThreadText =
+            `<@${rep}> updated Quote #${meta.quote_id} • ${accountDisplay}\n> *The deal now aligns within approval parameters*`;
+
           await client.apps.datastore.put({
             datastore: QuotesDatastore.name,
             item: quote,
@@ -1409,6 +1120,11 @@ export default SlackFunction(
               timestamp: Math.floor(Date.now() / 1000),
             });
             quote.approval_audit_trail = JSON.stringify(auditTrail);
+
+            // 🎯 Flavor A (Middle Dot): Escalated during review
+            editThreadText =
+              `<@${rep}> updated Quote #${meta.quote_id} • ${accountDisplay}\n> *The deal now aligns within approval parameters*`;
+
             await client.apps.datastore.put({
               datastore: QuotesDatastore.name,
               item: quote,
@@ -1449,6 +1165,16 @@ export default SlackFunction(
               timestamp: Math.floor(Date.now() / 1000),
             });
             quote.approval_audit_trail = JSON.stringify(auditTrail);
+
+            // 🎯 Flavor A (Middle Dot): Escalate into review
+            editThreadText =
+              `<@${rep}> updated Quote #${meta.quote_id} • ${accountDisplay}\n> *The deal now aligns within approval parameters*`;
+
+            await client.apps.datastore.put({
+              datastore: QuotesDatastore.name,
+              item: quote,
+            });
+
             if (newGauntlet[0]) {
               await dispatchFreshApprovalDM(
                 client,
@@ -1456,10 +1182,7 @@ export default SlackFunction(
                 newGauntlet[0],
                 primaryTs,
               );
-            } else {await client.apps.datastore.put({
-                datastore: QuotesDatastore.name,
-                item: quote,
-              });}
+            }
           }
         }
       }
@@ -1497,13 +1220,55 @@ export default SlackFunction(
         client.chat.postMessage({
           channel: primaryChan,
           thread_ts: primaryTs,
-          text:
-            `<@${rep}> committed ledger modifications for Quote #${meta.quote_id}.\n> ${statusNote}`,
+          text: editThreadText, // 🎯 Applies Flavor A dynamically
         }),
       );
       await Promise.allSettled(apiOps);
 
       return { response_action: "clear" };
+    },
+  )
+  .addBlockActionsHandler(
+    ["catalog_select", "qty_val", "price_val"],
+    async () => ({ completed: false }),
+  )
+  // ==========================================
+  // 4. APPROVAL INTERACTIVITY ROUTER
+  // ==========================================
+  .addBlockActionsHandler(
+    ["dm_expand_ledger"],
+    async ({ action, body, client }) => {
+      const state = JSON.parse(action.value);
+      await client.chat.update({
+        channel: body.container.channel_id,
+        ts: body.container.message_ts,
+        blocks: await buildApprovalDMBlocks(
+          client,
+          state.quote_id,
+          state.thread_ts,
+          true,
+        ),
+        text: "Expanded",
+      });
+      return { completed: false };
+    },
+  )
+  .addBlockActionsHandler(
+    ["dm_collapse_ledger"],
+    async ({ action, body, client }) => {
+      const state = JSON.parse(action.value);
+      await client.chat.update({
+        channel: body.container.channel_id,
+        ts: body.container.message_ts,
+        blocks: await buildApprovalDMBlocks(
+          client,
+          state.quote_id,
+          state.thread_ts,
+          false,
+        ),
+        text: "Collapsed",
+      });
+      return { completed: false };
     },
   )
   .addBlockActionsHandler(
@@ -1555,160 +1320,6 @@ export default SlackFunction(
   .addViewSubmissionHandler(
     ["approval_decision_modal"],
     async ({ view, body, client }) => {
-      const meta = JSON.parse(view.private_metadata),
-        auditNote = view.state.values.audit_note_block.note_input.value ||
-          "No note provided.";
-      const quoteRes = await client.apps.datastore.get({
-        datastore: QuotesDatastore.name,
-        id: meta.quote_id,
-      });
-      const quote = quoteRes.item;
-      if (!quote) return { response_action: "clear" };
-
-      const gauntlet: string[] = quote.approval_gauntlet
-          ? JSON.parse(quote.approval_gauntlet)
-          : [],
-        curStep = quote.current_approval_step || 0;
-      const auditTrail: any[] = quote.approval_audit_trail
-        ? JSON.parse(quote.approval_audit_trail)
-        : [];
-      auditTrail.push({
-        approver_id: body.user.id,
-        decision: meta.decision,
-        note: auditNote,
-        timestamp: Math.floor(Date.now() / 1000),
-      });
-      quote.approval_audit_trail = JSON.stringify(auditTrail);
-
-      const targetChan = quote.broadcast_channel_id ?? meta.dm_channel_id,
-        targetTs = meta.thread_ts ?? quote.broadcast_thread_ts;
-
-      if (meta.decision === "REJECT") {
-        quote.approval_status = "REJECTED";
-        quote.active_dm_channel = "";
-        quote.active_dm_ts = "";
-        await client.apps.datastore.put({
-          datastore: QuotesDatastore.name,
-          item: quote,
-        });
-        const card = await buildLivingQuoteCard(
-          client,
-          meta.quote_id,
-          quote.name,
-          0,
-          quote.sales_rep_id,
-          false,
-        );
-        await Promise.all([
-          client.chat.update({
-            channel: meta.dm_channel_id,
-            ts: meta.dm_message_ts,
-            text: "Rejected",
-            blocks: [{
-              type: "section",
-              text: {
-                type: "mrkdwn",
-                text: `**You rejected.** "${auditNote}"`,
-              },
-            }],
-          }),
-          client.chat.postMessage({
-            channel: targetChan,
-            thread_ts: targetTs,
-            text:
-              `:bell: <@${quote.sales_rep_id}>: Rejected by <@${body.user.id}>.\n> "${auditNote}"`,
-          }),
-          client.chat.update({
-            channel: targetChan,
-            ts: targetTs,
-            blocks: card,
-            text: "Rejected",
-          }),
-        ]);
-      } else {
-        const nextStep = curStep + 1;
-        if (nextStep >= gauntlet.length) {
-          quote.approval_status = "APPROVED";
-          quote.current_approval_step = nextStep;
-          quote.active_dm_channel = "";
-          quote.active_dm_ts = "";
-          await client.apps.datastore.put({
-            datastore: QuotesDatastore.name,
-            item: quote,
-          });
-          const card = await buildLivingQuoteCard(
-            client,
-            meta.quote_id,
-            quote.name,
-            0,
-            quote.sales_rep_id,
-            false,
-          );
-          await Promise.all([
-            client.chat.update({
-              channel: meta.dm_channel_id,
-              ts: meta.dm_message_ts,
-              text: "Approved",
-              blocks: [{
-                type: "section",
-                text: { type: "mrkdwn", text: "**Approved.**" },
-              }],
-            }),
-            client.chat.postMessage({
-              channel: targetChan,
-              thread_ts: targetTs,
-              text: `[APPROVED] *Total Consensus Reached!* Cleared Deal Desk.`,
-            }),
-            client.chat.update({
-              channel: targetChan,
-              ts: targetTs,
-              blocks: card,
-              text: "Fully Approved",
-            }),
-          ]);
-        } else {
-          quote.current_approval_step = nextStep;
-          await client.apps.datastore.put({
-            datastore: QuotesDatastore.name,
-            item: quote,
-          });
-          const card = await buildLivingQuoteCard(
-            client,
-            meta.quote_id,
-            quote.name,
-            0,
-            quote.sales_rep_id,
-            false,
-          );
-          await Promise.all([
-            client.chat.update({
-              channel: meta.dm_channel_id,
-              ts: meta.dm_message_ts,
-              text: "Approved",
-              blocks: [{
-                type: "section",
-                text: { type: "mrkdwn", text: "**Approved.**" },
-              }],
-            }),
-            client.chat.update({
-              channel: targetChan,
-              ts: targetTs,
-              blocks: card,
-              text: "Tier 2",
-            }),
-            dispatchFreshApprovalDM(
-              client,
-              quote,
-              gauntlet[nextStep],
-              targetTs,
-            ),
-          ]);
-        }
-      }
-      return { response_action: "clear" };
+      return await processApprovalSubmission({ view, body, client });
     },
-  )
-  .addBlockActionsHandler(
-    ["catalog_select", "qty_val", "price_val"],
-    async () => ({ completed: false }),
   );

@@ -4,7 +4,7 @@ import { CreateAccountWorkflow } from "../workflows/create_account_workflow.ts";
 
 const createAccountTrigger: Trigger<typeof CreateAccountWorkflow.definition> = {
   type: TriggerTypes.Shortcut,
-  name: "Create an Account",
+  name: "Account",
   description: "Launch the Account Creation dossier",
   workflow: `#/workflows/${CreateAccountWorkflow.definition.callback_id}`,
   inputs: {
